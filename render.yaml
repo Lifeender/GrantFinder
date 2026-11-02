@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: ai-grant-crawler
+    runtime: docker
+    plan: free
+    envVars:
+      - key: PORT
+        value: 8050
+      - key: GEMINI_API_KEY
+        sync: false

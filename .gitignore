@@ -1,0 +1,19 @@
+# Local SQLite database (contains personal API keys, phone number, and SMTP credentials)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Packaged release archives
+*.zip

@@ -1,0 +1,1287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Grant Interviewer &rarr; Active RFP Web Crawler</title>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --panel: #151f32;
+      --panel-alt: #1e293b;
+      --border: #2e3f5c;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --emerald: #10b981;
+      --emerald-hover: #059669;
+      --amber: #f59e0b;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      background: #070b14;
+      border-bottom: 1px solid var(--border);
+      padding: 14px 28px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand-icon {
+      width: 38px;
+      height: 38px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #3b82f6, #10b981);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 16px;
+      color: #fff;
+    }
+    .brand h1 { margin: 0; font-size: 18px; font-weight: 700; }
+    .brand p { margin: 0; font-size: 12px; color: var(--muted); }
+    .phase-badge {
+      padding: 5px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+    .phase-interview {
+      background: rgba(59, 130, 246, 0.18);
+      color: #93c5fd;
+      border: 1px solid rgba(59, 130, 246, 0.4);
+    }
+    .phase-crawler {
+      background: rgba(16, 185, 129, 0.18);
+      color: #6ee7b7;
+      border: 1px solid rgba(16, 185, 129, 0.4);
+    }
+    .google-btn {
+      background: #ffffff;
+      color: #1f2937;
+      border: 1px solid #d1d5db;
+      padding: 8px 15px;
+      border-radius: 999px;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .google-btn.connected {
+      background: rgba(16, 185, 129, 0.15);
+      color: #6ee7b7;
+      border-color: rgba(16, 185, 129, 0.4);
+    }
+    .btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 13.5px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .btn:hover { background: var(--accent-hover); }
+    .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .btn-emerald {
+      background: var(--emerald);
+      color: #042f2e;
+      font-weight: 700;
+      font-size: 14.5px;
+      padding: 13px 20px;
+      width: 100%;
+    }
+    .btn-emerald:hover { background: var(--emerald-hover); color: #fff; }
+    .btn-secondary {
+      background: var(--panel-alt);
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.15);
+      color: #fca5a5;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      padding: 5px 10px;
+      font-size: 12px;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px 28px;
+    }
+
+    /* FUNNEL STEPPER */
+    .funnel-bar {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-bottom: 22px;
+    }
+    .funnel-step {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 11px 14px;
+      font-size: 12.5px;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .funnel-step.active {
+      border-color: var(--accent);
+      background: rgba(59, 130, 246, 0.12);
+      color: var(--text);
+      font-weight: 600;
+    }
+    .funnel-step.done {
+      border-color: rgba(16, 185, 129, 0.5);
+      color: #6ee7b7;
+    }
+    .step-num {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--panel-alt);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+
+    .interview-grid {
+      display: grid;
+      grid-template-columns: 1.25fr 0.95fr;
+      gap: 20px;
+    }
+    @media (max-width: 900px) {
+      .interview-grid, .funnel-bar { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 22px;
+      margin-bottom: 16px;
+    }
+    .chat-box {
+      background: #070b14;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      height: 360px;
+      overflow-y: auto;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .msg {
+      max-width: 86%;
+      padding: 12px 16px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .msg-assistant {
+      background: var(--panel-alt);
+      border: 1px solid var(--border);
+      color: var(--text);
+      align-self: flex-start;
+    }
+    .msg-user {
+      background: var(--accent);
+      color: #ffffff;
+      align-self: flex-end;
+    }
+    .suggestions-box {
+      margin-bottom: 12px;
+    }
+    .suggestions-label {
+      font-size: 11.5px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 6px;
+    }
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .chip {
+      background: rgba(59, 130, 246, 0.14);
+      border: 1px solid rgba(59, 130, 246, 0.4);
+      color: #bfdbfe;
+      padding: 6px 13px;
+      border-radius: 999px;
+      font-size: 12.5px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .chip:hover {
+      background: var(--accent);
+      color: #fff;
+    }
+    input[type="text"], input[type="password"], input[type="number"], input[type="time"], select, textarea {
+      background: #070b14;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: 1px solid var(--accent);
+    }
+    .query-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(16, 185, 129, 0.14);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      color: #a7f3d0;
+      padding: 5px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 600;
+      margin: 0 6px 8px 0;
+    }
+    .query-pill button {
+      background: none;
+      border: none;
+      color: #fca5a5;
+      cursor: pointer;
+      font-weight: 700;
+      padding: 0;
+      font-size: 14px;
+    }
+    .blueprint-banner {
+      background: linear-gradient(135deg, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 0.95));
+      border: 1px solid rgba(16, 185, 129, 0.45);
+      border-radius: 14px;
+      padding: 18px 22px;
+      margin-bottom: 20px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .status-pill {
+      background: var(--panel-alt);
+      border: 1px solid var(--border);
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      color: var(--muted);
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--emerald);
+    }
+    .dot.running {
+      background: var(--amber);
+      animation: pulse 1s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(1.25); }
+    }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 20px;
+    }
+    .tab-btn {
+      background: transparent;
+      color: var(--muted);
+      border: none;
+      border-bottom: 2px solid transparent;
+      padding: 10px 18px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .tab-btn.active {
+      color: var(--text);
+      border-bottom-color: var(--emerald);
+    }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .grant-item {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 18px;
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .grant-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: #60a5fa;
+      text-decoration: none;
+    }
+    .grant-title:hover { text-decoration: underline; }
+    .grant-meta { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+    .grant-ai-box {
+      margin-top: 8px;
+      background: rgba(16, 185, 129, 0.1);
+      border-left: 3px solid var(--emerald);
+      padding: 7px 11px;
+      border-radius: 4px;
+      font-size: 13px;
+      color: #d1fae5;
+    }
+    .grant-snippet { font-size: 13.5px; color: #cbd5e1; margin-top: 8px; }
+    .badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .badge {
+      font-size: 11.5px;
+      padding: 2px 9px;
+      border-radius: 999px;
+      font-weight: 600;
+    }
+    .badge-score-high { background: rgba(16, 185, 129, 0.22); color: #6ee7b7; border: 1px solid rgba(16,185,129,0.4); }
+    .badge-score-mid { background: rgba(59, 130, 246, 0.2); color: #93c5fd; }
+    .badge-tag { background: rgba(148, 163, 184, 0.15); color: #cbd5e1; }
+    .badge-deadline { background: rgba(245, 158, 11, 0.18); color: #fcd34d; }
+    .form-group { margin-bottom: 14px; }
+    .form-group label {
+      display: block;
+      font-size: 12.5px;
+      color: var(--muted);
+      margin-bottom: 5px;
+      font-weight: 600;
+    }
+    .form-group input, .form-group select { width: 100%; }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 18px;
+    }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 900;
+      padding: 20px;
+    }
+    .modal {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      max-width: 520px;
+      width: 100%;
+      padding: 24px;
+    }
+    .toast {
+      position: fixed;
+      bottom: 22px;
+      right: 22px;
+      background: #10b981;
+      color: #06281e;
+      font-weight: 600;
+      padding: 12px 18px;
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      display: none;
+      z-index: 1000;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="brand-icon">AI</div>
+      <div>
+        <h1>Grant Search AI Interviewer &amp; RFP Web Crawler</h1>
+        <p id="headerSubtitle">Phase 1: AI narrows down your search queries &rarr; Phase 2: Automated Grant RFP Web Crawler</p>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span id="phaseBadge" class="phase-badge phase-interview">Phase 1: AI Interview Mode</span>
+      <button id="googleAuthBtn" class="google-btn" onclick="openGoogleModal()">
+        <svg width="16" height="16" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+        <span id="googleAuthLabel">Connect Google / Gemini Key</span>
+      </button>
+      <button id="shutdownServerBtn" class="btn btn-danger" style="padding:7px 12px;font-size:12.5px;display:none;" onclick="shutdownServer()" title="Stop the local Python server process">
+        ⏻ Shut Off Server
+      </button>
+    </div>
+  </header>
+
+  <div class="container">
+    <!-- ===================================================================== -->
+    <!-- PHASE 1 SCREEN: AI INTERVIEW TO NARROW DOWN SEARCH QUERIES            -->
+    <!-- ===================================================================== -->
+    <div id="interviewScreen">
+      <div class="funnel-bar">
+        <div id="fstep1" class="funnel-step active">
+          <div class="step-num">1</div>
+          <div><strong>Broad Topic &amp; Field</strong><br><span style="font-size:11px;">What area are you in?</span></div>
+        </div>
+        <div id="fstep2" class="funnel-step">
+          <div class="step-num">2</div>
+          <div><strong>Applicant &amp; Eligibility</strong><br><span style="font-size:11px;">Who is applying?</span></div>
+        </div>
+        <div id="fstep3" class="funnel-step">
+          <div class="step-num">3</div>
+          <div><strong>Grant Type &amp; Filters</strong><br><span style="font-size:11px;">Award size &amp; exclusions</span></div>
+        </div>
+        <div id="fstep4" class="funnel-step">
+          <div class="step-num">4</div>
+          <div><strong>Become Web Crawler</strong><br><span style="font-size:11px;">Crawl &amp; text daily</span></div>
+        </div>
+      </div>
+
+      <div class="interview-grid">
+        <!-- LEFT: AI INTERVIEWER -->
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <h2 style="margin:0;font-size:18px;">Step-by-Step AI Search Narrowing Interview</h2>
+            <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px;" onclick="resetInterview()">Start Over</button>
+          </div>
+          <p style="font-size:13px;color:var(--muted);margin-top:0;">
+            Answer a few quick questions from Gemini so it can narrow down your exact search queries before activating the grant web crawler.
+          </p>
+
+          <!-- Shown only when Google isn't connected yet -->
+          <div id="inlineAuthBanner" style="display:none;background:#070b14;border:1px solid #3b82f6;border-radius:10px;padding:16px;margin-bottom:14px;">
+            <div style="font-weight:700;font-size:14px;margin-bottom:6px;color:#93c5fd;">
+              Connect Google Gemini to Start Your AI Interview
+            </div>
+            <p style="font-size:12.5px;color:var(--muted);margin-top:0;">
+              Step 1: Click <strong>"Open Google Key Page"</strong> (or paste an existing Gemini API key).<br>
+              Step 2: Paste your key below and click <strong>"Verify &amp; Save API Key"</strong>.
+            </p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+              <button class="google-btn" onclick="openGoogleStudioPopup()">1. Open Google Key Page &rarr;</button>
+              <input type="password" id="inlineGeminiKey" placeholder="2. Paste Gemini API key (AIza...)" style="flex:1;min-width:210px;" onkeydown="if(event.key==='Enter') verifyGeminiKeyFrom('inlineGeminiKey', 'inlineVerifyStatus')" />
+              <button id="inlineVerifyBtn" class="btn" onclick="verifyGeminiKeyFrom('inlineGeminiKey', 'inlineVerifyStatus')">Verify &amp; Save API Key</button>
+            </div>
+            <div id="inlineVerifyStatus" style="font-size:13px;margin-top:6px;display:none;padding:8px 12px;border-radius:6px;"></div>
+          </div>
+
+          <div id="chatBox" class="chat-box"></div>
+
+          <div id="suggestionsContainer" class="suggestions-box">
+            <div class="suggestions-label">Click a quick answer or type below:</div>
+            <div id="suggestionChips" class="chip-row"></div>
+          </div>
+
+          <div style="display:flex;gap:8px;">
+            <input type="text" id="chatInput" placeholder="Type your answer here..." style="flex:1;" onkeydown="if(event.key==='Enter') sendInterviewAnswer()" />
+            <button id="sendChatBtn" class="btn" onclick="sendInterviewAnswer()">Answer &rarr;</button>
+          </div>
+        </div>
+
+        <!-- RIGHT: LIVE NARROWED QUERIES & ACTIVATE CRAWLER -->
+        <div class="card" style="display:flex;flex-direction:column;justify-content:space-between;">
+          <div>
+            <h2 style="margin-top:0;font-size:18px;">Live Search Query Funnel</h2>
+            <p style="font-size:13px;color:var(--muted);margin-top:0;">
+              As you answer Gemini's questions, watch your search queries narrow down here. You can also add or remove any query before launching the crawler.
+            </p>
+
+            <div id="funnelSummaryBox" style="background:#070b14;border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px;">
+              <div style="font-size:11.5px;color:var(--muted);text-transform:uppercase;margin-bottom:4px;">Narrowed Applicant &amp; Goal Profile</div>
+              <div id="funnelProfileText" style="font-size:13.5px;color:var(--text);">
+                Answer Question 1 on the left to start narrowing down your grant profile...
+              </div>
+            </div>
+
+            <div style="margin-bottom:14px;">
+              <div style="font-size:12px;color:var(--muted);font-weight:600;margin-bottom:8px;">
+                NARROWED SEARCH QUERIES THE CRAWLER WILL USE:
+              </div>
+              <div id="narrowedQueriesList"></div>
+              <div style="display:flex;gap:6px;margin-top:8px;">
+                <input type="text" id="manualQueryInput" placeholder="Add custom narrowed query..." style="flex:1;padding:7px 10px;font-size:13px;" onkeydown="if(event.key==='Enter') addManualQuery()" />
+                <button class="btn btn-secondary" style="padding:7px 12px;font-size:12.5px;" onclick="addManualQuery()">+ Add</button>
+              </div>
+            </div>
+
+            <div id="funnelCriteriaBox" style="margin-bottom:16px;"></div>
+          </div>
+
+          <div style="border-top:1px solid var(--border);padding-top:16px;">
+            <div style="font-size:12.5px;color:var(--muted);margin-bottom:10px;">
+              <strong>Notification Target:</strong> <span id="interviewAlertPreview">Checking...</span>
+            </div>
+            <button id="activateCrawlerBtn" class="btn btn-emerald" onclick="activateCrawlerMode()">
+              🚀 Lock In Narrowed Queries &amp; Launch Web Crawler
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- PHASE 2 SCREEN: ACTIVE GRANT RFP WEB CRAWLER & NOTIFIER               -->
+    <!-- ===================================================================== -->
+    <div id="crawlerScreen" style="display:none;">
+      <div class="blueprint-banner">
+        <div style="flex:1;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">
+            <span style="color:#6ee7b7;font-weight:700;font-size:13px;text-transform:uppercase;">● Active Grant RFP Web Crawler</span>
+            <div class="status-pill">
+              <span id="statusDot" class="dot"></span>
+              <span id="statusText">Idle</span>
+            </div>
+          </div>
+          <div id="activeBlueprintSummary" style="font-size:14.5px;font-weight:600;color:var(--text);margin-bottom:6px;"></div>
+          <div id="activeBlueprintQueries" class="badges" style="margin-top:4px;"></div>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <button class="btn btn-secondary" onclick="reopenInterview()">&larr; Re-Interview with AI to Narrow Queries</button>
+          <button id="crawlNowBtn" class="btn" onclick="triggerCrawl()">Crawl Now</button>
+        </div>
+      </div>
+
+      <div class="tabs">
+        <button class="tab-btn active" onclick="switchCrawlerTab('grants', this)">Active Open Grant RFPs (<span id="tabGrantCount">0</span>)</button>
+        <button class="tab-btn" onclick="switchCrawlerTab('notifications', this)">Daily SMS &amp; Email Settings</button>
+        <button class="tab-btn" onclick="switchCrawlerTab('sources', this)">Crawled Grant Sources (<span id="tabSourceCount">0</span>)</button>
+        <button class="tab-btn" onclick="switchCrawlerTab('logs', this)">Crawl Logs</button>
+      </div>
+
+      <!-- CRAWLER TAB 1: ACTIVE GRANTS -->
+      <div id="ctab-grants" class="tab-panel active">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;align-items:center;">
+          <input type="text" id="grantSearchInput" placeholder="Filter discovered RFPs..." oninput="loadGrants()" style="flex:1;min-width:220px;" />
+          <select id="grantScoreFilter" onchange="loadGrants()">
+            <option value="0">All Discovered Grants</option>
+            <option value="65">High AI Matches Only (&ge; 65%)</option>
+            <option value="80">Top AI Matches Only (&ge; 80%)</option>
+          </select>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13.5px;cursor:pointer;">
+            <input type="checkbox" id="grantStarredOnly" onchange="loadGrants()" /> Starred Only
+          </label>
+        </div>
+        <div id="grantsList"></div>
+      </div>
+
+      <!-- CRAWLER TAB 2: DAILY SMS & EMAIL -->
+      <div id="ctab-notifications" class="tab-panel">
+        <div class="grid-2">
+          <div class="card">
+            <h3 style="margin-top:0;">Daily Automatic Crawl &amp; SMS Schedule</h3>
+            <label style="display:flex;align-items:center;gap:8px;margin-bottom:12px;cursor:pointer;">
+              <input type="checkbox" id="autoCrawlEnabled" />
+              <strong>Run Daily Automatic Background Crawl</strong>
+            </label>
+            <div class="form-group">
+              <label>Schedule Mode</label>
+              <select id="dailyScheduleMode">
+                <option value="daily_time">Every Day at Specific Time</option>
+                <option value="interval">Every N Hours</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Daily Delivery Time (24h Server Time)</label>
+              <input type="time" id="dailyRunTime" value="08:30" />
+            </div>
+            <div class="form-group">
+              <label>Interval Hours (if Interval Mode)</label>
+              <input type="number" id="crawlIntervalHours" min="1" max="168" value="24" />
+            </div>
+            <hr style="border:none;border-top:1px solid var(--border);margin:16px 0;" />
+            <label style="display:flex;align-items:center;gap:8px;margin-bottom:12px;cursor:pointer;">
+              <input type="checkbox" id="notifySmsEnabled" />
+              <strong>Enable Free Carrier SMS Notifications</strong>
+            </label>
+            <div class="form-group">
+              <label>10-Digit Phone Number</label>
+              <input type="text" id="notifySmsPhone" placeholder="2283275299" />
+            </div>
+            <div class="form-group">
+              <label>Carrier</label>
+              <select id="notifySmsCarrier">
+                <option value="verizon">Verizon (@vtext.com)</option>
+                <option value="att">AT&amp;T (@txt.att.net)</option>
+                <option value="tmobile">T-Mobile (@tmomail.net)</option>
+                <option value="google_fi">Google Fi (@msg.fi.google.com)</option>
+                <option value="us_cellular">U.S. Cellular (@email.uscc.net)</option>
+                <option value="cricket">Cricket (@mms.cricketwireless.net)</option>
+                <option value="boost">Boost (@sms.myboostmobile.com)</option>
+                <option value="metro">Metro (@mymetropcs.com)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3 style="margin-top:0;">SMTP Email Credentials</h3>
+            <div class="form-group">
+              <label>SMTP Host</label>
+              <input type="text" id="smtpHost" placeholder="smtp.gmail.com" />
+            </div>
+            <div class="form-group">
+              <label>SMTP Port</label>
+              <input type="number" id="smtpPort" placeholder="587" />
+            </div>
+            <div class="form-group">
+              <label>SMTP Username</label>
+              <input type="text" id="smtpUser" />
+            </div>
+            <div class="form-group">
+              <label>SMTP App Password</label>
+              <input type="password" id="smtpPassword" />
+            </div>
+            <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;cursor:pointer;">
+              <input type="checkbox" id="notifyEmailEnabled" />
+              <strong>Enable HTML Email Digest</strong>
+            </label>
+            <div class="form-group">
+              <label>Recipient Email</label>
+              <input type="text" id="notifyEmailTo" />
+            </div>
+            <div style="display:flex;gap:10px;margin-top:16px;">
+              <button class="btn" onclick="saveNotificationSettings()">Save Settings</button>
+              <button class="btn btn-secondary" onclick="sendTestAlert()">Send Test Text / Email</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CRAWLER TAB 3: SOURCES -->
+      <div id="ctab-sources" class="tab-panel">
+        <div class="card">
+          <h3 style="margin-top:0;">Add Custom Grant Source URL</h3>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;">
+            <input type="text" id="newSourceName" placeholder="Source Name" style="flex:1;" />
+            <input type="text" id="newSourceUrl" placeholder="https://..." style="flex:2;" />
+            <button class="btn" onclick="createSource()">+ Add Source</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-top:0;">Tracked &amp; Auto-Discovered Sources</h3>
+          <div id="sourcesList"></div>
+        </div>
+      </div>
+
+      <!-- CRAWLER TAB 4: LOGS -->
+      <div id="ctab-logs" class="tab-panel">
+        <div class="card">
+          <h3 style="margin-top:0;">Crawl Run History</h3>
+          <div id="logsList"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- GOOGLE SIGN-IN MODAL -->
+  <div id="googleModal" class="modal-backdrop" onclick="if(event.target===this) closeGoogleModal()">
+    <div class="modal">
+      <h3 style="margin-top:0;">Connect &amp; Verify Google Gemini API Key</h3>
+      <p style="font-size:13px;color:var(--muted);">
+        1. Click <strong>"Open Google Key Page"</strong> to grab your key with your Google account.<br>
+        2. Paste the key below and click <strong>"Verify &amp; Save API Key"</strong> to test and save it.
+      </p>
+      <button class="google-btn" style="width:100%;justify-content:center;margin-bottom:12px;" onclick="openGoogleStudioPopup()">
+        1. Open Google Key Page (aistudio.google.com) &rarr;
+      </button>
+      <div class="form-group" style="margin-bottom:10px;">
+        <input type="password" id="quickGeminiKey" placeholder="2. Paste Gemini API key here (AIza...)" onkeydown="if(event.key==='Enter') verifyGeminiKeyFrom('quickGeminiKey', 'modalVerifyStatus')" />
+      </div>
+      <button id="modalVerifyBtn" class="btn" style="width:100%;margin-bottom:10px;" onclick="verifyGeminiKeyFrom('quickGeminiKey', 'modalVerifyStatus')">
+        ✓ Verify &amp; Save API Key
+      </button>
+      <div id="modalVerifyStatus" style="font-size:13px;margin-bottom:12px;display:none;padding:10px 12px;border-radius:8px;"></div>
+      <div style="display:flex;justify-content:space-between;margin-top:14px;">
+        <button class="btn btn-danger" onclick="disconnectGoogle()">Disconnect Key</button>
+        <button class="btn btn-secondary" onclick="closeGoogleModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    let currentNarrowedQueries = [];
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.style.display = 'block';
+      setTimeout(() => { t.style.display = 'none'; }, 3800);
+    }
+
+    function openGoogleModal() { document.getElementById('googleModal').style.display = 'flex'; }
+    function closeGoogleModal() { document.getElementById('googleModal').style.display = 'none'; }
+
+    function openGoogleStudioPopup() {
+      const w = 560, h = 680;
+      const left = (window.screen.width - w) / 2;
+      const top = (window.screen.height - h) / 2;
+      window.open(
+        'https://aistudio.google.com/app/apikey',
+        'GoogleSignInPopup',
+        `width=${w},height=${h},top=${top},left=${left},resizable=yes,scrollbars=yes`
+      );
+    }
+
+    async function verifyGeminiKeyFrom(inputId, statusId) {
+      const inputEl = document.getElementById(inputId);
+      const statusEl = document.getElementById(statusId);
+      const rawKey = (inputEl ? inputEl.value : '').trim();
+
+      statusEl.style.display = 'block';
+      if (!rawKey) {
+        statusEl.style.background = 'rgba(239, 68, 68, 0.18)';
+        statusEl.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+        statusEl.style.color = '#fca5a5';
+        statusEl.textContent = '❌ Please paste your Gemini API key into the box first.';
+        return;
+      }
+
+      statusEl.style.background = 'rgba(59, 130, 246, 0.15)';
+      statusEl.style.border = '1px solid rgba(59, 130, 246, 0.4)';
+      statusEl.style.color = '#93c5fd';
+      statusEl.textContent = '⏳ Verifying API key with Google Gemini servers...';
+
+      try {
+        const res = await fetch('/api/auth/quick-connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ gemini_api_key: rawKey })
+        });
+        const data = await res.json();
+
+        if (res.ok && data.ok) {
+          statusEl.style.background = 'rgba(16, 185, 129, 0.18)';
+          statusEl.style.border = '1px solid rgba(16, 185, 129, 0.45)';
+          statusEl.style.color = '#6ee7b7';
+          statusEl.textContent = '✅ ' + (data.message || 'Verified and connected!');
+          inputEl.value = '';
+          showToast(data.message || 'API Key Verified!');
+          setTimeout(() => {
+            closeGoogleModal();
+            loadAppState();
+          }, 900);
+        } else {
+          statusEl.style.background = 'rgba(239, 68, 68, 0.18)';
+          statusEl.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+          statusEl.style.color = '#fca5a5';
+          statusEl.textContent = '❌ ' + (data.message || data.detail || 'Verification failed.');
+        }
+      } catch (err) {
+        statusEl.style.background = 'rgba(239, 68, 68, 0.18)';
+        statusEl.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+        statusEl.style.color = '#fca5a5';
+        statusEl.textContent = '❌ Network error communicating with local server: ' + err;
+      }
+    }
+
+    async function shutdownServer() {
+      if (!confirm('Shut off the Grant Crawler server process?')) return;
+      try {
+        await fetch('/api/server/shutdown', { method: 'POST' });
+      } catch (e) {}
+      document.body.innerHTML = `
+        <div style="max-width:520px;margin:120px auto;background:#151f32;border:1px solid #2e3f5c;border-radius:14px;padding:32px;text-align:center;font-family:sans-serif;color:#f8fafc;">
+          <h2 style="margin-top:0;color:#fca5a5;">⏻ Server Shut Off</h2>
+          <p style="color:#94a3b8;">The Python server process has been terminated cleanly. You can restart it anytime from PowerShell using <code>.\\start.ps1</code> or <code>.\\run.bat</code>.</p>
+        </div>
+      `;
+    }
+
+    async function disconnectGoogle() {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      closeGoogleModal();
+      loadAppState();
+    }
+
+    function updateFunnelStepper(stage) {
+      for (let i = 1; i <= 4; i++) {
+        const el = document.getElementById('fstep' + i);
+        el.classList.remove('active', 'done');
+        if (i < stage) el.classList.add('done');
+        else if (i === stage) el.classList.add('active');
+      }
+    }
+
+    function renderNarrowedQueries() {
+      const container = document.getElementById('narrowedQueriesList');
+      if (!currentNarrowedQueries.length) {
+        container.innerHTML = `<span style="font-size:13px;color:var(--muted);">No narrowed queries yet — answer Gemini's question on the left.</span>`;
+        return;
+      }
+      container.innerHTML = currentNarrowedQueries.map((q, idx) => `
+        <span class="query-pill">
+          ${q}
+          <button onclick="removeQueryAt(${idx})" title="Remove">&times;</button>
+        </span>
+      `).join('');
+    }
+
+    function removeQueryAt(idx) {
+      currentNarrowedQueries.splice(idx, 1);
+      renderNarrowedQueries();
+    }
+
+    function addManualQuery() {
+      const inp = document.getElementById('manualQueryInput');
+      const v = inp.value.trim();
+      if (!v) return;
+      if (!currentNarrowedQueries.includes(v)) {
+        currentNarrowedQueries.push(v);
+        renderNarrowedQueries();
+      }
+      inp.value = '';
+    }
+
+    async function loadAppState() {
+      const res = await fetch('/api/concierge/state');
+      const data = await res.json();
+
+      // Update Google button
+      const gBtn = document.getElementById('googleAuthBtn');
+      const gLbl = document.getElementById('googleAuthLabel');
+      const inlineBanner = document.getElementById('inlineAuthBanner');
+      if (data.auth.connected) {
+        gBtn.classList.add('connected');
+        gLbl.textContent = 'Google Connected ✓';
+        inlineBanner.style.display = 'none';
+      } else {
+        gBtn.classList.remove('connected');
+        gLbl.textContent = 'Sign in with Google';
+        inlineBanner.style.display = 'block';
+      }
+
+      // Notification target preview
+      const targets = [];
+      if (data.sms_preview) targets.push(`SMS (${data.sms_preview})`);
+      if (data.email_to) targets.push(`Email (${data.email_to})`);
+      document.getElementById('interviewAlertPreview').textContent = targets.length ? targets.join(' + ') : 'Configure in settings';
+
+      // Switch between Phase 1 (Interview) and Phase 2 (Crawler)
+      const phaseBadge = document.getElementById('phaseBadge');
+      if (data.program_phase === 'crawler') {
+        document.getElementById('interviewScreen').style.display = 'none';
+        document.getElementById('crawlerScreen').style.display = 'block';
+        phaseBadge.textContent = 'Phase 2: Active Web Crawler';
+        phaseBadge.className = 'phase-badge phase-crawler';
+
+        const p = data.profile || {};
+        document.getElementById('activeBlueprintSummary').textContent =
+          p.summary || 'Searching Grants.gov, Web RFPs, and Foundation Portals for your narrowed queries.';
+        document.getElementById('activeBlueprintQueries').innerHTML =
+          (data.active_topics || []).map(q => `<span class="badge badge-score-high">${q}</span>`).join(' ');
+
+        loadOverview();
+        loadGrants();
+        loadSources();
+        loadSettings();
+        return;
+      }
+
+      // Phase 1: AI Interview Mode
+      document.getElementById('interviewScreen').style.display = 'block';
+      document.getElementById('crawlerScreen').style.display = 'none';
+      phaseBadge.textContent = 'Phase 1: AI Interview Mode';
+      phaseBadge.className = 'phase-badge phase-interview';
+
+      updateFunnelStepper(data.interview_stage || 1);
+
+      // Render Chat History & Dynamic Suggestion Chips
+      const box = document.getElementById('chatBox');
+      const history = data.history || [];
+      let suggestions = [
+        'Public Policy & Economics (Undergraduate)',
+        'STEM & Scientific Research Grants',
+        '501(c)(3) Nonprofit Community Programs',
+        'Clean Energy & Sustainability RFPs'
+      ];
+
+      if (!history.length) {
+        box.innerHTML = `
+          <div class="msg msg-assistant">
+            👋 Welcome! Before I turn into an automated Grant RFP Web Crawler, I'll ask you <strong>3 quick questions</strong> to narrow down your exact search queries.<br><br>
+            <strong>Question 1:</strong> What broad field, topic, or project are you looking for grant funding or fellowships in?
+          </div>
+        `;
+      } else {
+        box.innerHTML = history.map(m => `
+          <div class="msg ${m.role === 'user' ? 'msg-user' : 'msg-assistant'}">
+            ${m.text.replace(/\n/g, '<br>')}
+          </div>
+        `).join('');
+        box.scrollTop = box.scrollHeight;
+        const lastAssistant = [...history].reverse().find(m => m.role === 'assistant');
+        if (lastAssistant && lastAssistant.suggested_answers && lastAssistant.suggested_answers.length) {
+          suggestions = lastAssistant.suggested_answers;
+        }
+      }
+
+      document.getElementById('suggestionChips').innerHTML = suggestions.map(
+        s => `<span class="chip" onclick="pickSuggestion(${JSON.stringify(s).replace(/"/g, '&quot;')})">${s}</span>`
+      ).join('');
+
+      // Render Live Funnel Right Panel
+      const p = data.profile || {};
+      currentNarrowedQueries = (p.search_queries && p.search_queries.length)
+        ? [...p.search_queries]
+        : [...(data.active_topics || [])];
+      renderNarrowedQueries();
+
+      if (p.summary) {
+        document.getElementById('funnelProfileText').innerHTML = `
+          <div style="margin-bottom:6px;">${p.summary}</div>
+          <div style="font-size:12px;color:var(--muted);">
+            <strong>Applicant:</strong> ${p.organization_type || 'Unspecified'} &bull;
+            <strong>Geography:</strong> ${p.geography || 'Any'} &bull;
+            <strong>Scope:</strong> ${p.funding_range || 'Any'}
+          </div>
+        `;
+      } else {
+        document.getElementById('funnelProfileText').textContent =
+          'Answer Question 1 on the left to start narrowing down your grant profile...';
+      }
+
+      const mustMatch = (p.must_match_criteria || []).map(c => `<span class="badge badge-score-high">✓ ${c}</span>`).join(' ');
+      const avoid = (p.avoid_criteria || []).map(c => `<span class="badge badge-deadline">✕ Exclude: ${c}</span>`).join(' ');
+      document.getElementById('funnelCriteriaBox').innerHTML =
+        (mustMatch || avoid)
+          ? `<div style="font-size:12px;color:var(--muted);font-weight:600;margin-bottom:6px;">ELIGIBILITY &amp; EXCLUSION FILTERS:</div><div class="badges">${mustMatch} ${avoid}</div>`
+          : '';
+    }
+
+    function pickSuggestion(text) {
+      document.getElementById('chatInput').value = text;
+      sendInterviewAnswer();
+    }
+
+    async function sendInterviewAnswer() {
+      const input = document.getElementById('chatInput');
+      const msg = input.value.trim();
+      if (!msg) return;
+
+      const authRes = await fetch('/api/auth/status');
+      const auth = await authRes.json();
+      if (!auth.connected) {
+        openGoogleModal();
+        showToast('Please connect your Google account first!');
+        return;
+      }
+
+      const btn = document.getElementById('sendChatBtn');
+      input.value = '';
+      btn.disabled = true;
+      btn.textContent = 'Narrowing...';
+
+      const box = document.getElementById('chatBox');
+      box.innerHTML += `<div class="msg msg-user">${msg}</div>`;
+      box.scrollTop = box.scrollHeight;
+
+      const res = await fetch('/api/concierge/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: msg })
+      });
+      btn.disabled = false;
+      btn.textContent = 'Answer →';
+
+      if (res.ok) {
+        await loadAppState();
+      } else {
+        let errDetail = 'Error communicating with Gemini';
+        try {
+          const err = await res.json();
+          errDetail = err.detail || err.message || errDetail;
+        } catch (e) {}
+        box.innerHTML += `<div class="msg msg-assistant" style="border-color:#ef4444;color:#fca5a5;">❌ ${errDetail}</div>`;
+        box.scrollTop = box.scrollHeight;
+        showToast(errDetail);
+      }
+    }
+
+    async function resetInterview() {
+      await fetch('/api/concierge/reset', { method: 'POST' });
+      currentNarrowedQueries = [];
+      loadAppState();
+      showToast('Started a fresh AI Interview!');
+    }
+
+    async function activateCrawlerMode() {
+      if (!currentNarrowedQueries.length) {
+        showToast('Please answer at least one AI question or add a search query first!');
+        return;
+      }
+      const res = await fetch('/api/concierge/activate-crawler', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          queries: currentNarrowedQueries,
+          clear_old_grants: true
+        })
+      });
+      if (res.ok) {
+        showToast('Web Crawler Activated! Searching for active RFPs & sending notifications...');
+        loadAppState();
+      } else {
+        const err = await res.json();
+        showToast(err.detail || 'Could not activate crawler');
+      }
+    }
+
+    async function reopenInterview() {
+      await fetch('/api/concierge/reopen-interview', { method: 'POST' });
+      loadAppState();
+    }
+
+    function switchCrawlerTab(name, btn) {
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById('ctab-' + name).classList.add('active');
+      btn.classList.add('active');
+    }
+
+    async function loadOverview() {
+      const res = await fetch('/api/overview');
+      const data = await res.json();
+      document.getElementById('tabGrantCount').textContent = data.counts.total_grants;
+      document.getElementById('tabSourceCount').textContent = data.counts.total_sources;
+
+      const dot = document.getElementById('statusDot');
+      const txt = document.getElementById('statusText');
+      const btn = document.getElementById('crawlNowBtn');
+      if (data.crawler.is_running) {
+        dot.classList.add('running');
+        txt.textContent = data.crawler.current_step;
+        if (btn) btn.disabled = true;
+      } else {
+        dot.classList.remove('running');
+        txt.textContent = data.crawler.last_run_at ? ('Last crawl: ' + data.crawler.last_run_at.replace('T', ' ')) : 'Active & Ready';
+        if (btn) btn.disabled = false;
+      }
+
+      const logsContainer = document.getElementById('logsList');
+      if (logsContainer) {
+        logsContainer.innerHTML = data.logs.map(l => `
+          <div style="padding:10px;border-bottom:1px solid var(--border);">
+            <strong>${l.started_at.replace('T', ' ')}</strong> &mdash; <span style="color:#6ee7b7;">${l.status}</span>
+            <div style="font-size:13px;color:var(--muted);">${l.summary || ''}</div>
+          </div>
+        `).join('') || '<p style="color:var(--muted);">No crawl logs yet.</p>';
+      }
+    }
+
+    async function loadGrants() {
+      const q = document.getElementById('grantSearchInput').value;
+      const min_score = document.getElementById('grantScoreFilter').value;
+      const starred = document.getElementById('grantStarredOnly').checked;
+      const params = new URLSearchParams({ q, min_score, starred });
+      const res = await fetch('/api/grants?' + params.toString());
+      const data = await res.json();
+      const container = document.getElementById('grantsList');
+
+      if (!data.grants.length) {
+        container.innerHTML = `
+          <div class="card" style="text-align:center;padding:36px;">
+            <h3 style="margin-top:0;">Crawling for Active Grant RFPs...</h3>
+            <p style="color:var(--muted);">The crawler is searching Grants.gov, Web RFPs, and Foundation Portals for your narrowed queries. Results will appear automatically as soon as the crawl finishes.</p>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = data.grants.map(g => {
+        const score = g.ai_score || 0;
+        const scoreBadge = score > 0
+          ? `<span class="badge ${score >= 75 ? 'badge-score-high' : 'badge-score-mid'}">✨ ${score}% AI Match</span>`
+          : '';
+        const tags = (g.matched_tags || '').split(',').filter(Boolean).map(
+          t => `<span class="badge badge-tag">${t.trim()}</span>`
+        ).join('');
+        const deadlineBadge = g.deadline
+          ? `<span class="badge badge-deadline">Deadline: ${g.deadline}</span>`
+          : '';
+        return `
+          <div class="grant-item">
+            <div style="flex:1;">
+              <a class="grant-title" href="${g.url}" target="_blank" rel="noopener">${g.title}</a>
+              <div class="grant-meta">
+                Source: <strong>${g.source_name}</strong>
+                ${g.agency_or_funder ? ` &bull; Funder: <strong>${g.agency_or_funder}</strong>` : ''}
+                &bull; Found: ${g.discovered_at.split('T')[0]}
+              </div>
+              ${g.ai_reason ? `<div class="grant-ai-box"><strong>Gemini Match Analysis:</strong> ${g.ai_reason}</div>` : ''}
+              ${g.snippet ? `<div class="grant-snippet">${g.snippet}</div>` : ''}
+              <div class="badges">${scoreBadge} ${deadlineBadge} ${tags}</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end;">
+              <button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;" onclick="toggleStar(${g.id}, ${!g.starred})">
+                ${g.starred ? '★ Starred' : '☆ Star'}
+              </button>
+              <button class="btn btn-danger" onclick="dismissGrant(${g.id})">Dismiss</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function toggleStar(id, starred) {
+      await fetch(`/api/grants/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ starred })
+      });
+      loadGrants();
+    }
+
+    async function dismissGrant(id) {
+      await fetch(`/api/grants/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'dismissed' })
+      });
+      loadGrants();
+    }
+
+    async function loadSources() {
+      const res = await fetch('/api/sources');
+      const data = await res.json();
+      const list = document.getElementById('sourcesList');
+      list.innerHTML = data.sources.map(s => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;border-bottom:1px solid var(--border);">
+          <div>
+            <a href="${s.url}" target="_blank" style="color:#60a5fa;font-weight:600;text-decoration:none;">${s.name}</a>
+            <span class="badge badge-tag" style="margin-left:8px;">${s.is_discovered ? 'Auto-Discovered Portal' : 'Core Source'}</span>
+            <div style="font-size:12px;color:var(--muted);">${s.url}</div>
+          </div>
+          <button class="btn btn-danger" onclick="removeSourceItem(${s.id})">Remove</button>
+        </div>
+      `).join('');
+    }
+
+    async function createSource() {
+      const name = document.getElementById('newSourceName').value.trim();
+      const url = document.getElementById('newSourceUrl').value.trim();
+      if (!name || !url) return;
+      await fetch('/api/sources', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, url })
+      });
+      document.getElementById('newSourceName').value = '';
+      document.getElementById('newSourceUrl').value = '';
+      loadSources();
+    }
+
+    async function removeSourceItem(id) {
+      await fetch(`/api/sources/${id}`, { method: 'DELETE' });
+      loadSources();
+    }
+
+    async function loadSettings() {
+      const res = await fetch('/api/settings');
+      const data = await res.json();
+      const s = data.settings;
+      document.getElementById('smtpHost').value = s.smtp_host || 'smtp.gmail.com';
+      document.getElementById('smtpPort').value = s.smtp_port || '587';
+      document.getElementById('smtpUser').value = s.smtp_user || '';
+      document.getElementById('smtpPassword').value = s.smtp_password || '';
+      document.getElementById('notifyEmailEnabled').checked = s.notify_email_enabled === 'true';
+      document.getElementById('notifyEmailTo').value = s.notify_email_to || '';
+      document.getElementById('notifySmsEnabled').checked = s.notify_sms_enabled === 'true';
+      document.getElementById('notifySmsPhone').value = s.notify_sms_phone || '';
+      document.getElementById('notifySmsCarrier').value = s.notify_sms_carrier || 'verizon';
+      document.getElementById('autoCrawlEnabled').checked = s.auto_crawl_enabled === 'true';
+      document.getElementById('dailyScheduleMode').value = s.daily_schedule_mode || 'daily_time';
+      document.getElementById('dailyRunTime').value = s.daily_run_time || '08:30';
+      document.getElementById('crawlIntervalHours').value = s.crawl_interval_hours || '24';
+    }
+
+    async function saveNotificationSettings() {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          smtp_host: document.getElementById('smtpHost').value,
+          smtp_port: document.getElementById('smtpPort').value,
+          smtp_user: document.getElementById('smtpUser').value,
+          smtp_password: document.getElementById('smtpPassword').value,
+          notify_email_enabled: document.getElementById('notifyEmailEnabled').checked,
+          notify_email_to: document.getElementById('notifyEmailTo').value,
+          notify_sms_enabled: document.getElementById('notifySmsEnabled').checked,
+          notify_sms_phone: document.getElementById('notifySmsPhone').value,
+          notify_sms_carrier: document.getElementById('notifySmsCarrier').value,
+          auto_crawl_enabled: document.getElementById('autoCrawlEnabled').checked,
+          daily_schedule_mode: document.getElementById('dailyScheduleMode').value,
+          daily_run_time: document.getElementById('dailyRunTime').value,
+          crawl_interval_hours: document.getElementById('crawlIntervalHours').value,
+        })
+      });
+      showToast('Daily notification & schedule settings saved!');
+    }
+
+    async function sendTestAlert() {
+      await saveNotificationSettings();
+      showToast('Sending test text / email...');
+      const res = await fetch('/api/notifications/test', { method: 'POST' });
+      const data = await res.json();
+      showToast(data.message);
+    }
+
+    async function triggerCrawl() {
+      await fetch('/api/crawl', { method: 'POST' });
+      showToast('Crawl started!');
+      loadOverview();
+    }
+
+    setInterval(async () => {
+      const crawlerVisible = document.getElementById('crawlerScreen').style.display !== 'none';
+      if (!crawlerVisible) return;
+      const wasRunning = document.getElementById('statusDot').classList.contains('running');
+      await loadOverview();
+      const isNowRunning = document.getElementById('statusDot').classList.contains('running');
+      if (wasRunning && !isNowRunning) {
+        loadGrants();
+        loadSources();
+        showToast('Crawl complete! Active grant RFPs updated.');
+      }
+    }, 2500);
+
+    if (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost') {
+      document.getElementById('shutdownServerBtn').style.display = 'inline-block';
+    }
+    loadAppState();
+  </script>
+</body>
+</html>

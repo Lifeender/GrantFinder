@@ -1,0 +1,11 @@
+services:
+  grant-concierge:
+    build: .
+    container_name: ai-grant-concierge
+    restart: unless-stopped
+    ports:
+      - "8050:8050"
+    volumes:
+      - ./grants_crawler.db:/app/grants_crawler.db
+    environment:
+      - TZ=America/Chicago
