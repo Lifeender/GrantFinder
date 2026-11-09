@@ -1,3 +1,26 @@
+"""
+===============================================================================
+gemini_agent.py — Multi-Provider AI Client (Google Gemini, OpenAI, Claude)
+===============================================================================
+Purpose:
+    Provides a unified interface (`call_gemini`) for all LLM operations in
+    GrantFinder, supporting three AI providers out of the box:
+    1. Google Gemini (`gemini-3.5-flash-lite`, `gemini-2.5-flash`, or Google OAuth)
+    2. OpenAI ChatGPT (`gpt-4o-mini`, `gpt-4.1-mini`, `gpt-4o`)
+    3. Anthropic Claude (`claude-sonnet-4-20250514`, `claude-3-7-sonnet-latest`,
+       `claude-3-5-haiku-latest`)
+
+    Key Functions:
+    - `verify_and_save_ai_key()`: Auto-detects provider from key prefix (`AIza...` -> Gemini,
+      `sk-ant-...` -> Claude, `sk-...` -> OpenAI), tests the key live, and saves it.
+    - `call_gemini()`: Unified dispatcher that routes prompts to whichever provider
+      the user has connected and selected.
+    - `chat_with_grant_concierge()`: Delegates Phase 1 interview turns to `query_generator.py`.
+    - `discover_sources_and_queries_with_ai()`: Recommends specialized non-Grants.gov
+      foundation and fellowship portals tailored to the user's profile.
+===============================================================================
+"""
+
 import json
 import os
 import time
@@ -7,6 +30,10 @@ from typing import Dict, Any, List, Optional, Tuple
 import requests
 
 from database import get_settings, update_settings, replace_ai_tagwords
+
+# =====================================================================
+# 1. OAUTH & PROVIDER ENDPOINT CONSTANTS
+# =====================================================================
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -22,6 +49,7 @@ OAUTH_SCOPES = [
 
 
 def _try_load_local_adc_credentials() -> Optional[Dict[str, str]]:
+    """Checks for local Google Application Default Credentials (ADC) if available."""
     candidates = [
         Path(os.environ.get("APPDATA", "")) / "gcloud" / "application_default_credentials.json",
         Path.home() / ".config" / "gcloud" / "application_default_credentials.json",
@@ -51,7 +79,12 @@ OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 
 
+# =====================================================================
+# 2. API KEY DETECTION, AUTH STATUS & VERIFICATION
+# =====================================================================
+
 def _get_provider_keys(settings: Dict[str, str]) -> Dict[str, str]:
+    """Reads API keys from SQLite settings or environment variables (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`)."""
     gemini_key = settings.get("gemini_api_key", "").strip() or os.environ.get("GEMINI_API_KEY", "").strip()
     openai_key = settings.get("openai_api_key", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip()
     claude_key = (
@@ -67,6 +100,13 @@ def _get_provider_keys(settings: Dict[str, str]) -> Dict[str, str]:
 
 
 def _clean_and_detect_key(raw_key: str, requested_provider: Optional[str] = None) -> Tuple[str, str]:
+    """
+    Strips quotes or accidental `KEY_NAME=` prefixes when a user pastes an `.env` line,
+    and auto-detects the AI provider from well-known key prefixes:
+    - `sk-ant-...` -> `claude`
+    - `AIza...`    -> `gemini`
+    - `sk-...`     -> `openai`
+    """
     cleaned = (raw_key or "").strip().strip('"').strip("'")
     if "=" in cleaned:
         prefix, val = cleaned.split("=", 1)
@@ -95,6 +135,7 @@ def _clean_and_detect_key(raw_key: str, requested_provider: Optional[str] = None
         prov = detected
 
     return cleaned, prov
+
 
 
 def get_google_auth_status() -> Dict[str, Any]:

@@ -1,3 +1,29 @@
+"""
+===============================================================================
+search_engine.py — Crawler Retrieval, URL Blacklisting, Deadline Parsing & Scraper
+===============================================================================
+Purpose:
+    This module is Stage 2 of the GrantFinder pipeline. It handles:
+    1. Rejecting non-RFP domains (Wikipedia, social media, news sites, academic
+       paper repositories, job boards) via `BLOCKED_DOMAINS`.
+    2. Rejecting non-RFP URL path patterns (`/news/`, `/blog/`, `/press-releases/`,
+       `/winners/`, `/past-recipients/`) via `BLACKLIST_URL_PATTERNS`.
+    3. Parsing closing deadlines (`parse_date_string`, `extract_deadline_from_text`,
+       `is_deadline_expired`) while avoiding false-positive expiration on "Opened:"
+       or "Posted:" dates.
+    4. Building domain-targeted and Boolean search queries (`build_boolean_search_queries`).
+    5. Scraping both live HTML pages and downloadable PDF RFP/NOFO guidelines
+       (`scrape_document_content`, `extract_pdf_text_bytes`) with snippet fallback
+       when foundation websites block automated scrapers.
+
+How to Customize:
+    - To block additional websites, add their root domain to `BLOCKED_DOMAINS`.
+    - To block additional URL path segments, add them to `BLACKLIST_URL_PATTERNS`.
+    - To change the Boolean search templates used for web discovery, edit
+      `build_boolean_search_queries()`.
+===============================================================================
+"""
+
 import io
 import re
 import urllib.parse
@@ -6,6 +32,10 @@ from datetime import datetime, date, timedelta
 from typing import Dict, Any, List, Optional
 import requests
 from bs4 import BeautifulSoup
+
+# =====================================================================
+# 1. HTTP CLIENT HEADERS & DATE CONSTANTS
+# =====================================================================
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -46,7 +76,12 @@ MONTH_MAP = {
     "december": 12,
 }
 
-# Domains that are never open grant/RFP solicitations
+# =====================================================================
+# 2. DOMAIN & URL PATH BLACKLISTS
+# =====================================================================
+
+# Domains that are NEVER open grant/RFP solicitations (encyclopedias, social media,
+# job boards, academic paper archives, e-commerce, and mainstream news outlets).
 BLOCKED_DOMAINS = (
     "wikipedia.org",
     "wikimedia.org",
@@ -129,7 +164,8 @@ BLOCKED_DOMAINS = (
     "news.google.com",
 )
 
-# URL path blacklist patterns to eliminate news blogs, press releases, past winners, and non-RFPs
+# URL path substrings that indicate a page is a blog post, press release, past winner list,
+# login screen, job posting, or historical NSF award record rather than an open RFP.
 BLACKLIST_URL_PATTERNS = (
     "/news/",
     "/blog/",
@@ -176,7 +212,13 @@ BLACKLIST_URL_PATTERNS = (
     "/ncbi.nlm.nih.gov/pmc",
 )
 
-# ONLY match dates explicitly labeled as a deadline / closing / due date (never match 'Opened:' or 'Posted:')
+# =====================================================================
+# 3. DEADLINE EXTRACTION & EXPIRATION CHECKING
+# =====================================================================
+
+# IMPORTANT: We ONLY match dates preceded by explicit closing/deadline keywords
+# (e.g., "Deadline:", "Due Date:", "Closes:"). We intentionally do NOT match bare dates
+# or "Opened:" / "Posted:" dates, because active grants open in the past and close in the future.
 DEADLINE_PATTERNS = [
     re.compile(
         r"(?:deadline|due date|closing date|closes|apply by|submission date|applications due|proposals due|letters of intent due|loi due|close date)[:\s]+([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+20\d{2}|\d{1,2}/\d{1,2}/20\d{2}|20\d{2}-\d{2}-\d{2}|\d{1,2}\s+[A-Za-z]{3,9}\s+20\d{2})",
@@ -186,10 +228,19 @@ DEADLINE_PATTERNS = [
 
 
 def parse_date_string(text: str) -> Optional[date]:
+    """
+    Parses common US and ISO date formats into a `datetime.date` object:
+    - ISO: `2026-06-30`
+    - Slash/Dash: `06/30/2026`
+    - Month Day, Year: `June 30, 2026` or `Jun. 30, 2026`
+    - Day Month Year: `30 June 2026`
+    Returns `None` if no valid calendar date is found.
+    """
     if not text:
         return None
     s = text.strip()
 
+    # Format 1: YYYY-MM-DD
     m_iso = re.search(r"\b(20\d{2})-(\d{1,2})-(\d{1,2})\b", s)
     if m_iso:
         try:
@@ -197,6 +248,7 @@ def parse_date_string(text: str) -> Optional[date]:
         except ValueError:
             pass
 
+    # Format 2: MM/DD/YYYY or MM-DD-YYYY
     m_slash = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](20\d{2})\b", s)
     if m_slash:
         try:
@@ -204,6 +256,7 @@ def parse_date_string(text: str) -> Optional[date]:
         except ValueError:
             pass
 
+    # Format 3: Month DD, YYYY (e.g., "December 15, 2026")
     m_month_first = re.search(
         r"\b([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(20\d{2})\b", s
     )
@@ -219,6 +272,7 @@ def parse_date_string(text: str) -> Optional[date]:
             except ValueError:
                 pass
 
+    # Format 4: DD Month YYYY (e.g., "15 December 2026")
     m_day_first = re.search(
         r"\b(\d{1,2})\s+([A-Za-z]{3,9})\.?,?\s+(20\d{2})\b", s
     )
@@ -239,7 +293,8 @@ def parse_date_string(text: str) -> Optional[date]:
 
 def normalize_deadline_iso(text: str) -> str:
     """
-    Attempts to parse a date string into YYYY-MM-DD format; returns original string if rolling/unparsed.
+    Attempts to normalize a date string into `YYYY-MM-DD` format for consistent UI
+    display and sorting; returns the original trimmed string if rolling or unparsed.
     """
     d = parse_date_string(text)
     if d:
@@ -248,6 +303,12 @@ def normalize_deadline_iso(text: str) -> str:
 
 
 def is_deadline_expired(deadline_str: str) -> bool:
+    """
+    Determines whether a solicitation deadline has already passed (`< today`).
+    - Rolling / ongoing / open deadlines are never treated as expired.
+    - "Published YYYY-MM-DD" strings (used by Federal Register notices without a
+      parsed closing date) expire after 150 days.
+    """
     if not deadline_str:
         return False
     low = deadline_str.lower().strip()
@@ -264,6 +325,7 @@ def is_deadline_expired(deadline_str: str) -> bool:
     if parsed:
         return parsed < today
 
+    # Fallback: if only 4-digit years are present and the latest year is strictly before this year
     years = [int(y) for y in re.findall(r"\b(20\d{2})\b", deadline_str)]
     if years and max(years) < today.year:
         return True
@@ -273,24 +335,22 @@ def is_deadline_expired(deadline_str: str) -> bool:
 def has_stale_year_in_title_or_url(title: str, url: str = "") -> bool:
     """
     Checks if the TITLE explicitly names a past grant cycle year (e.g. '2022 Request for Proposals').
-    Does NOT inspect numeric substrings in URLs because grant IDs and multi-year NOFO archive paths
-    frequently contain numbers matching 20xx.
+    NOTE: We intentionally do NOT inspect numeric substrings in URLs because grant IDs
+    (such as `grants.gov/search-results-detail/352019`) frequently contain `20xx` digits.
     """
     current_year = datetime.now().year
     years = [int(y) for y in re.findall(r"\b(20[12]\d)\b", title or "")]
     if not years:
         return False
-    # Reject if the title explicitly mentions a year strictly before (current_year - 1)
-    # or before current_year without mentioning current_year / next_year
     return max(years) < current_year
 
 
 def extract_deadline_from_text(text: str) -> str:
     """
-    Extracts explicit closing deadlines from text.
-    If multiple deadline dates are mentioned (e.g. Cycle 1 in the past, Cycle 2 in the future),
-    prefers the active/future deadline. Returns 'EXPIRED' only if explicit deadline date(s) were
-    found and ALL of them are in the past.
+    Scans document text for explicit closing deadlines (`DEADLINE_PATTERNS`).
+    If multiple deadline dates are mentioned on a page (for example, Cycle 1 in the past
+    and Cycle 2 in the future), prefers the active/future deadline.
+    Returns `'EXPIRED'` ONLY if explicit deadline date(s) were found and ALL of them are in the past.
     """
     if not text:
         return ""
@@ -312,8 +372,11 @@ def extract_deadline_from_text(text: str) -> str:
 
 def is_url_blacklisted(url: str, title: str = "") -> bool:
     """
-    Returns True if the URL or title matches any blacklisted domain, path pattern
-    (/news/, /blog/, /press-releases/, /winners/, /past-recipients/), or stale grant cycle title.
+    Master URL & Title Blacklist Gate:
+    Returns `True` (reject) if the URL or title matches:
+    1. Any domain in `BLOCKED_DOMAINS` (Wikipedia, social media, job sites, etc.)
+    2. Any URL path in `BLACKLIST_URL_PATTERNS` (`/news/`, `/blog/`, `/winners/`, etc.)
+    3. A stale grant cycle year in the title (e.g., `"2021 RFP"`).
     """
     u = (url or "").strip().lower()
     t = (title or "").strip().lower()
@@ -328,11 +391,12 @@ def is_url_blacklisted(url: str, title: str = "") -> bool:
     if not host:
         return True
 
+    # Check domain against BLOCKED_DOMAINS
     for bad_dom in BLOCKED_DOMAINS:
         if host == bad_dom or host.endswith("." + bad_dom):
             return True
 
-    # Exception: NIH Guide RSS feed URL uses /grants/guide/newsfeed/fundingopps.xml
+    # Exception: Official NIH Guide RSS feed URL uses `/grants/guide/newsfeed/fundingopps.xml`
     u_for_path_check = u.replace("/grants/guide/newsfeed/", "/grants/guide/feed/")
     for pat in BLACKLIST_URL_PATTERNS:
         if pat in u_for_path_check:
@@ -347,12 +411,22 @@ def is_url_blacklisted(url: str, title: str = "") -> bool:
     return False
 
 
+# =====================================================================
+# 4. BOOLEAN & DOMAIN-TARGETED SEARCH QUERY BUILDER
+# =====================================================================
+
 def build_boolean_search_queries(criteria: Dict[str, Any]) -> List[Dict[str, str]]:
     """
-    Builds high-recall, high-precision search strings that work reliably across
-    DuckDuckGo, Bing RSS, and directory searches while incorporating domain targeting
-    (`grants.gov`, `philanthropynewsdigest.org/rfps`, `sam.gov`, `fundsforngos.org`),
-    RFP/NOFO/PDF modifiers (`filetype:pdf OR inurl:rfp OR inurl:nofo`), and negative terms.
+    Builds high-recall, high-precision search strings for web discovery (`crawler.py`).
+    For each user search topic, creates 4 complementary search queries:
+    1. Portal-Targeted Boolean Query: Targets `grants.gov`, `philanthropynewsdigest.org/rfps`,
+       and `sam.gov` with `(filetype:pdf OR inurl:rfp OR inurl:nofo)`.
+    2. Foundation RFP Directory Query: Targets `philanthropynewsdigest.org/rfps`,
+       `fundsforngos.org`, `instrumentl.com/grants`, and `rwjf.org`.
+    3. Open Web RFP / Solicitation Query: Searches across foundations, state portals, and
+       universities while excluding Wikipedia and award announcements.
+    4. Downloadable Grant Guidelines / PDF Query: Specifically looks for downloadable PDF
+       RFP/NOFO guidelines (`filetype:pdf OR inurl:rfp OR inurl:grants`).
     """
     base_queries = criteria.get("search_queries") or []
     project_domain = criteria.get("project_domain") or ""
@@ -369,7 +443,7 @@ def build_boolean_search_queries(criteria: Dict[str, Any]) -> List[Dict[str, str
             compiled.append({"query": q_clean, "topic": topic, "label": label})
 
     for q in base_queries[:4]:
-        # Extract the clean thematic core without trailing RFP words so we don't duplicate them
+        # Strip trailing generic RFP words from `q` so we can combine `topic_core` cleanly
         topic_core = re.sub(
             r'\b(grant|grants|rfp|rfps|nofo|notice of funding opportunity|request for proposals|solicitation|guidelines|funding)\b',
             " ",
@@ -378,28 +452,28 @@ def build_boolean_search_queries(criteria: Dict[str, Any]) -> List[Dict[str, str
         )
         topic_core = re.sub(r"\s+", " ", topic_core).strip() or q.strip()
 
-        # 1. Portal-targeted Boolean query (Requirement 2 pattern)
+        # Plan 1: Portal-targeted Boolean query
         _add_plan(
             f'(site:grants.gov OR site:philanthropynewsdigest.org/rfps OR site:sam.gov) {topic_core} (filetype:pdf OR inurl:rfp OR inurl:nofo OR "RFP" OR "grant")',
             topic_core,
             "Targeted Grant Portal (RFP/NOFO)",
         )
 
-        # 2. Direct Philanthropy & Foundation RFP Directory search
+        # Plan 2: Direct Philanthropy & Foundation RFP Directory search
         _add_plan(
             f'(site:philanthropynewsdigest.org/rfps OR site:fundsforngos.org OR site:instrumentl.com/grants OR site:rwjf.org) {topic_core} grant OR RFP',
             topic_core,
             "Foundation RFP Directory",
         )
 
-        # 3. High-intent Open RFP / Solicitation Web Search (search-engine friendly)
+        # Plan 3: High-intent Open RFP / Solicitation Web Search
         _add_plan(
             f'{topic_core} ("Request for Proposals" OR "Notice of Funding Opportunity" OR "grant opportunity" OR "open RFP") apply deadline -site:wikipedia.org -site:grants.gov -"winner announced"',
             topic_core,
             "Open Web RFP / Solicitation",
         )
 
-        # 4. Downloadable Grant Guidelines & NOFO PDF Search
+        # Plan 4: Downloadable Grant Guidelines & NOFO PDF Search
         _add_plan(
             f'{topic_core} ("Grant Guidelines" OR "RFP" OR "NOFO" OR "Call for Proposals") (filetype:pdf OR inurl:rfp OR inurl:grants) apply -site:wikipedia.org',
             topic_core,
@@ -409,14 +483,21 @@ def build_boolean_search_queries(criteria: Dict[str, Any]) -> List[Dict[str, str
     return compiled
 
 
+# =====================================================================
+# 5. HTML & PDF GUIDELINE SCRAPER (WITH ANTI-BOT FALLBACK)
+# =====================================================================
+
 def extract_pdf_text_bytes(pdf_bytes: bytes, max_chars: int = 12000) -> str:
     """
-    Extracts readable text from downloadable RFP/NOFO PDF guidelines.
-    Uses `pypdf` if installed, with a pure-Python zlib stream fallback.
+    Extracts readable text from downloadable RFP/NOFO PDF guidelines (~3,000 tokens).
+    - First tries `pypdf.PdfReader` if installed.
+    - Falls back to a pure-Python `zlib` PDF stream decompressor so PDF scraping works
+      even in minimal environments without external PDF libraries.
     """
     if not pdf_bytes:
         return ""
 
+    # Method 1: pypdf library (if installed)
     try:
         from pypdf import PdfReader  # type: ignore
 
@@ -436,6 +517,7 @@ def extract_pdf_text_bytes(pdf_bytes: bytes, max_chars: int = 12000) -> str:
     except Exception:
         pass
 
+    # Method 2: Pure-Python zlib stream text extractor
     extracted_chunks: List[str] = []
     for match in re.finditer(rb"stream[\r\n]+(.*?)[\r\n]+endstream", pdf_bytes, re.DOTALL):
         stream_data = match.group(1)
@@ -456,6 +538,11 @@ def extract_pdf_text_bytes(pdf_bytes: bytes, max_chars: int = 12000) -> str:
 
 
 def _extract_targeted_section(full_text: str, section_keywords: List[str], window: int = 2500) -> str:
+    """
+    Locates specific sections inside a long RFP document (such as "Eligibility",
+    "Who May Apply", or "501(c)(3)") and extracts a surrounding character window
+    so the Pass-2 LLM verifier can check statutory applicant eligibility.
+    """
     low = full_text.lower()
     snippets: List[str] = []
     for kw in section_keywords:
@@ -471,15 +558,18 @@ def _extract_targeted_section(full_text: str, section_keywords: List[str], windo
 
 def scrape_document_content(url: str, fallback_title: str = "", fallback_snippet: str = "", timeout: int = 7) -> Optional[Dict[str, Any]]:
     """
-    Scrapes a candidate RFP URL (both HTML pages and downloadable PDF guidelines).
-    If the remote server blocks automated scraping (e.g. HTTP 403 Cloudflare) or times out,
-    gracefully falls back to `fallback_title` and `fallback_snippet` so valid grants from
-    strict foundation portals are not lost.
+    Fetches and parses a candidate grant URL (supporting both HTML pages and PDF files).
+    - Returns `None` if the URL is blacklisted or returns HTTP 404/410 (dead link).
+    - If a foundation site blocks automated scraping (e.g., HTTP 403 Cloudflare) or times out,
+      falls back to `fallback_title` + `fallback_snippet` so legitimate grants are not dropped.
+    - On HTML pages, also scans for embedded downloadable RFP/NOFO PDF guideline links and
+      supplements the page text with the PDF text when needed.
     """
     if is_url_blacklisted(url, fallback_title):
         return None
 
     def _build_fallback_payload() -> Optional[Dict[str, Any]]:
+        """Builds a structured document payload from search/RSS snippets when live HTTP scraping is blocked."""
         if not fallback_title and not fallback_snippet:
             return None
         combined = f"{fallback_title}\n{fallback_snippet}".strip()
@@ -496,10 +586,10 @@ def scrape_document_content(url: str, fallback_title: str = "", fallback_snippet
     try:
         resp = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
         if resp.status_code in (404, 410):
-            # Definitely dead link
+            # Dead link -> discard immediately
             return None
         if resp.status_code != 200:
-            # Site may block bots (401/403/429); fall back to search/RSS snippet
+            # Bot-protected portal (401/403/429) -> verify using search/RSS snippet
             return _build_fallback_payload()
         final_url = resp.url.strip()
         if is_url_blacklisted(final_url, fallback_title):
@@ -537,6 +627,7 @@ def scrape_document_content(url: str, fallback_title: str = "", fallback_snippet
     # Case B: HTML RFP / Grant Page (with optional embedded PDF Guidelines link)
     soup = BeautifulSoup(resp.text[:180000], "html.parser")
 
+    # Look for a downloadable PDF RFP/Guideline link on the HTML page
     pdf_guideline_url = ""
     for a in soup.find_all("a", href=True)[:120]:
         href = a["href"].strip()
@@ -550,6 +641,7 @@ def scrape_document_content(url: str, fallback_title: str = "", fallback_snippet
                 pdf_guideline_url = cand_pdf
                 break
 
+    # Remove noisy navigation/script/footer elements before extracting body text
     for tag in soup(["script", "style", "nav", "footer", "noscript", "header"]):
         tag.decompose()
 
@@ -568,6 +660,7 @@ def scrape_document_content(url: str, fallback_title: str = "", fallback_snippet
     if len(body_text) < 60 and fallback_snippet:
         body_text = f"{body_text} {fallback_snippet}".strip()
 
+    # If the HTML page is short and links to a PDF guideline, scrape the PDF text too
     pdf_supplement = ""
     if pdf_guideline_url and len(body_text) < 4500:
         try:
@@ -604,3 +697,4 @@ def scrape_document_content(url: str, fallback_title: str = "", fallback_snippet
         "detected_deadline": dl,
         "document_text": combined_doc[:12000],
     }
+

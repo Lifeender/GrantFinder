@@ -1,3 +1,25 @@
+"""
+===============================================================================
+database.py — SQLite Persistence Layer, Default Grant Sources & Cleanup Gates
+===============================================================================
+Purpose:
+    Manages the SQLite database (`grants_crawler.db`) for GrantFinder:
+    - `settings`: Key-value configuration store (AI provider keys, schedule settings,
+      SMTP/SMS settings, and serialized AI Applicant Profile JSON).
+    - `tagwords`: Active search queries generated during Phase 1 or added manually.
+    - `sources`: Built-in (`DEFAULT_SOURCES`) and AI-discovered (`is_discovered=1`)
+      grant portals, RSS feeds, and APIs.
+    - `grants`: Verified active grant opportunities with `ai_score`, `ai_reason`,
+      `eligibility_summary`, `match_confidence`, and `deadline`.
+    - `crawl_logs`: History of crawler runs and summary statistics.
+
+How to Customize:
+    - To change default app settings (like minimum match score or schedule time),
+      edit `DEFAULT_SETTINGS`.
+    - To add new permanent grant portals or RSS feeds, add an entry to `DEFAULT_SOURCES`.
+===============================================================================
+"""
+
 import os
 import sqlite3
 import json
@@ -5,8 +27,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+# Path to the SQLite database file (can be overridden via DATABASE_PATH env variable)
 DB_PATH = Path(os.environ.get("DATABASE_PATH", str(Path(__file__).parent / "grants_crawler.db")))
 
+# Email-to-SMS carrier gateway domains for free text-message alerts
 CARRIER_GATEWAYS = {
     "verizon": "vtext.com",
     "att": "txt.att.net",
@@ -18,6 +42,7 @@ CARRIER_GATEWAYS = {
     "metro": "mymetropcs.com",
 }
 
+# Default application settings seeded on first run
 DEFAULT_SETTINGS = {
     # Program Phase State: 'interview' (Phase 1) or 'crawler' (Phase 2)
     "program_phase": "interview",
@@ -68,7 +93,9 @@ DEFAULT_SETTINGS = {
     "ai_chat_history_json": "[]",
 }
 
+# Built-in Federal APIs, Foundation Directories, and Philanthropic Grant Portals
 DEFAULT_SOURCES = [
+
     {
         "name": "Grants.gov (Official Federal API)",
         "url": "https://www.grants.gov",

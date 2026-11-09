@@ -1,3 +1,31 @@
+"""
+================================================================================
+query_generator.py — Guided AI Interview & Structured Grant Criteria Extractor
+================================================================================
+
+PURPOSE:
+This module powers Phase 1 of GrantFinder (the conversational AI intake funnel)
+and converts raw user input (e.g., "community engagement") into a structured
+search criteria payload before the web crawler runs.
+
+HOW IT WORKS:
+1. Spelling & Typo Normalization (`clean_query_typos`):
+   Fixes common typos (like "engagemnet" -> "engagement") so downstream API
+   and web searches don't fail on misspelled keywords.
+2. Statutory Eligibility Mapping (`normalize_applicant_type`):
+   Maps free-form user descriptions (e.g., "nonprofit", "undergrad", "city")
+   to standard statutory categories used in federal NOFOs and foundation RFPs.
+3. High-Intent Query Expansion (`ensure_high_intent_rfp_queries`):
+   If a user enters just a short topic (like "community engagement"), expands
+   it into 4-5 targeted RFP/NOFO search phrases.
+4. Conversational Interview (`run_guided_interview_turn`):
+   Guides the user through 4 narrowing stages and saves the resulting JSON
+   blueprint (`applicant_type`, `project_domain`, `target_geography`,
+   `funding_range`, `search_queries`, `negative_terms`, `domain_filters`)
+   into the SQLite `settings` table.
+================================================================================
+"""
+
 import json
 import re
 from typing import Dict, Any, List, Optional
@@ -5,6 +33,11 @@ from typing import Dict, Any, List, Optional
 from database import get_settings, update_settings, replace_ai_tagwords, list_tagwords
 from gemini_agent import call_gemini, get_google_auth_status, _parse_json_object
 
+# ------------------------------------------------------------------------------
+# CONFIGURATION CONSTANTS (EDIT THESE TO CUSTOMIZE CATEGORIES OR DEFAULTS)
+# ------------------------------------------------------------------------------
+
+# Standard applicant eligibility categories used on Grants.gov and foundation portals.
 STATUTORY_APPLICANT_TYPES = [
     "Nonprofit 501(c)(3)",
     "Higher Education Institution",
@@ -16,6 +49,8 @@ STATUTORY_APPLICANT_TYPES = [
     "K-12 School District/Educational Agency",
 ]
 
+# Terms that indicate an article is about past winners or commercial vendor bids
+# rather than an open grant opportunity.
 DEFAULT_NEGATIVE_TERMS = [
     "winner announced",
     "winners announced",
@@ -28,6 +63,8 @@ DEFAULT_NEGATIVE_TERMS = [
     "applications are closed",
 ]
 
+# Authoritative grant & RFP domains targeted during Boolean portal searches.
+# Add any state or niche foundation domains here to include them by default.
 DEFAULT_DOMAIN_FILTERS = [
     "grants.gov",
     "sam.gov",
@@ -45,6 +82,8 @@ DEFAULT_DOMAIN_FILTERS = [
     "templeton.org",
 ]
 
+# Dictionary of common grant-search typos mapped to their corrected spelling.
+# Add any additional frequent misspellings here.
 COMMON_GRANT_TYPOS = {
     "engagemnet": "engagement",
     "engagment": "engagement",
@@ -73,22 +112,25 @@ COMMON_GRANT_TYPOS = {
 }
 
 
+# ------------------------------------------------------------------------------
+# HELPER FUNCTIONS: TYPO CLEANING, APPLICANT MAPPING & QUERY EXPANSION
+# ------------------------------------------------------------------------------
+
 def clean_query_typos(text: str) -> str:
     """
     Fixes common spelling typos in user-entered grant topics (e.g. 'community engagemnet' -> 'community engagement')
-    and strips raw boolean syntax if accidentally stored in a tagword.
+    and strips raw boolean syntax if accidentally stored inside a tagword string.
     """
     if not text:
         return ""
-    # Strip trailing boolean parentheticals if previously appended
+    # Remove any accidental boolean parentheticals like ("RFP" OR "NOFO") from raw tagwords
     cleaned = re.sub(r'\s*\((?:"RFP"|filetype:pdf|inurl:).*?\)\s*', " ", text, flags=re.IGNORECASE).strip()
     words = cleaned.split()
     fixed_words = []
     for w in words:
         w_bare = re.sub(r"[^a-zA-Z]", "", w).lower()
         if w_bare in COMMON_GRANT_TYPOS:
-            replacement = COMMON_GRANT_TYPOS[w_bare]
-            fixed_words.append(replacement)
+            fixed_words.append(COMMON_GRANT_TYPOS[w_bare])
         else:
             fixed_words.append(w)
     return " ".join(fixed_words).strip()
@@ -97,7 +139,9 @@ def clean_query_typos(text: str) -> str:
 def normalize_applicant_type(raw_value: str) -> str:
     """
     Maps free-form user/LLM descriptions of the applicant to canonical statutory categories
-    used in federal NOFOs and foundation guidelines, while preserving sub-level context.
+    used in federal NOFOs and foundation guidelines.
+    If the user hasn't specified a narrow category yet, defaults to a broad 'Any Eligible Applicant'
+    setting so the verifier doesn't prematurely reject valid grants.
     """
     val = (raw_value or "").strip()
     low = val.lower()
@@ -130,8 +174,12 @@ def ensure_high_intent_rfp_queries(
 ) -> List[str]:
     """
     Normalizes search queries so each query is clean, typo-corrected, and pairs
-    domain keywords with natural RFP/grant signifiers that work across Grants.gov,
-    Federal Register, DuckDuckGo, and Bing without breaking search parsers.
+    domain keywords with natural RFP/grant signifiers.
+
+    NOTE FOR EDITING:
+    If the user only enters 1 or 2 simple keywords (like "community engagement"),
+    this function automatically expands them into 4 distinct grant/RFP search phrases
+    so the crawler has multiple angles to search across the web.
     """
     cleaned: List[str] = []
     source_list = [clean_query_typos(q) for q in (raw_queries or []) if q and clean_query_typos(q)]
@@ -142,8 +190,7 @@ def ensure_high_intent_rfp_queries(
         if q and q not in cleaned:
             cleaned.append(q)
 
-    # If the user only provided 1-2 short topic phrases (like "community engagement"),
-    # automatically expand them into 4 high-intent RFP/grant variations.
+    # Expand a single simple phrase into 4 high-intent RFP/grant variations
     if len(cleaned) == 1:
         base = cleaned[0]
         base_core = re.sub(
@@ -176,8 +223,10 @@ def _normalize_structured_criteria_payload(
     fallback_topics: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
-    Enforces the strict structured criteria schema across both LLM interview output
-    and standalone criteria extraction.
+    Guarantees that the returned profile dictionary always contains all required
+    structured fields (`applicant_type`, `project_domain`, `target_geography`,
+    `funding_range`, `search_queries`, `negative_terms`, `domain_filters`), plus
+    backward-compatible keys (`organization_type`, `geography`) used by the UI.
     """
     cleaned_fallbacks = [clean_query_typos(t) for t in (fallback_topics or []) if clean_query_typos(t)]
 
@@ -210,7 +259,6 @@ def _normalize_structured_criteria_payload(
     raw_queries = raw_profile.get("search_queries") or cleaned_fallbacks or [project_domain]
     if isinstance(raw_queries, str):
         raw_queries = [q.strip() for q in raw_queries.split(",") if q.strip()]
-    # Always include user's active manual topics if they added any
     combined_raw_queries = list(dict.fromkeys(cleaned_fallbacks + [str(q).strip() for q in raw_queries if str(q).strip()]))
 
     search_queries = ensure_high_intent_rfp_queries(
@@ -260,13 +308,18 @@ def _normalize_structured_criteria_payload(
     }
 
 
+# ------------------------------------------------------------------------------
+# MAIN ENTRY POINTS: CRITERIA EXTRACTION & CONVERSATIONAL INTERVIEW
+# ------------------------------------------------------------------------------
+
 def extract_structured_search_criteria(
     profile_or_prompt: Optional[Any] = None,
     active_tags: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
-    Extracts and enforces the structured search criteria JSON payload from saved settings
-    or by calling the connected LLM if structured fields are missing.
+    Called at the beginning of a crawl (`crawler.py`) or verification pass (`verifier.py`).
+    Loads the user's saved profile from SQLite (or queries the connected LLM if needed)
+    and returns the normalized structured criteria dictionary.
     """
     settings = get_settings()
     if active_tags is None:
@@ -284,6 +337,7 @@ def extract_structured_search_criteria(
             except Exception:
                 parsed_existing = {"summary": raw_json}
 
+    # Fast path: if the profile already has all structured fields, normalize and return
     if (
         parsed_existing.get("applicant_type")
         and parsed_existing.get("project_domain")
@@ -292,6 +346,7 @@ def extract_structured_search_criteria(
     ):
         return _normalize_structured_criteria_payload(parsed_existing, fallback_topics=cleaned_tags)
 
+    # Otherwise, if an AI key is connected, ask the LLM to synthesize the structured criteria
     auth = get_google_auth_status()
     if auth.get("connected") and (cleaned_tags or parsed_existing):
         system_prompt = f"""
@@ -355,10 +410,10 @@ Respond strictly in valid JSON matching this schema:
 
 def run_guided_interview_turn(user_message: str) -> Dict[str, Any]:
     """
-    Guided Conversation & Structured Criteria Extraction workflow:
-    Conducts a 4-stage conversational interview to extract statutory `applicant_type`,
-    `project_domain`, `target_geography`, and `funding_range`, and produces a strict JSON
-    payload with `search_queries`, `negative_terms`, and `domain_filters`.
+    Handles each user message in the Phase 1 AI Interview UI (`/api/concierge/chat`).
+    Steps through the 4-stage narrowing funnel, extracts the structured criteria,
+    updates the active tagwords in SQLite, and returns the assistant reply + clickable
+    suggestion chips to the frontend.
     """
     settings = get_settings()
     try:
@@ -478,6 +533,7 @@ Respond strictly in valid JSON matching this exact schema:
         }
     )
 
+    # Save narrowed search queries as active tagwords in SQLite
     search_queries = profile.get("search_queries") or []
     if search_queries:
         replace_ai_tagwords(search_queries, category="AI Narrowed")

@@ -1,3 +1,40 @@
+"""
+===============================================================================
+verifier.py — Post-Scrape Two-Pass Verification Filter
+===============================================================================
+Purpose:
+    This module is Stage 3 of the GrantFinder pipeline. Every candidate grant/RFP
+    must pass through two verification gates before being saved to the database:
+
+    - PASS 1 (`pre_verify_scraped_document` — Deterministic Rule Gate):
+      Runs fast, zero-cost checks on the scraped HTML/PDF content to immediately
+      reject blacklisted URLs, closed/archived solicitation announcements
+      (`CLOSED_SOLICITATION_PHRASES`), commercial vendor procurement bids
+      (`COMMERCIAL_PROCUREMENT_PHRASES`), expired deadlines, and pages lacking
+      any grant/RFP vocabulary (`REQUIRED_RFP_NOUNS`).
+
+    - PASS 2 (`verify_single_document_with_llm` / `verify_candidates_two_pass` — AI Gate):
+      Sends the extracted Applicant Profile + the first ~3,000 tokens of the
+      scraped document (title, synopsis, and eligibility section) to the user's
+      connected AI model (Gemini, OpenAI ChatGPT, or Anthropic Claude) and enforces
+      a strict 6-field JSON output schema:
+      {
+        "is_open_rfp": true,
+        "deadline": "YYYY-MM-DD",
+        "is_eligible": true,
+        "eligibility_summary": "Open to 501(c)(3) entities in Region 4",
+        "match_confidence": 0.88,
+        "rejection_reason": null
+      }
+
+How to Customize:
+    - To add new phrases that automatically mark a grant as closed, edit
+      `CLOSED_SOLICITATION_PHRASES`.
+    - To adjust how strict the AI is when scoring eligibility, edit the system
+      prompt inside `verify_candidates_two_pass()`.
+===============================================================================
+"""
+
 import json
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple, Callable
@@ -12,7 +49,11 @@ from search_engine import (
     scrape_document_content,
 )
 
-# Phrases that disqualify a document in Pass 1 before spending LLM tokens
+# =====================================================================
+# 1. PASS-1 DETERMINISTIC FILTER CONSTANTS
+# =====================================================================
+
+# Phrases indicating that a grant page is closed, archived, or announcing past winners.
 CLOSED_SOLICITATION_PHRASES = (
     "from wikipedia",
     "free encyclopedia",
@@ -46,6 +87,8 @@ CLOSED_SOLICITATION_PHRASES = (
     "congratulates the winners",
 )
 
+# Phrases indicating a commercial vendor procurement bid (e.g. construction/janitorial)
+# rather than a grant or fellowship opportunity.
 COMMERCIAL_PROCUREMENT_PHRASES = (
     "invitation for bid",
     "invitation to bid",
@@ -56,6 +99,7 @@ COMMERCIAL_PROCUREMENT_PHRASES = (
     "hvac replacement bid",
 )
 
+# At least one of these grant/RFP nouns must appear in the document to pass Pass 1.
 REQUIRED_RFP_NOUNS = (
     "grant",
     "grants",
@@ -80,9 +124,14 @@ REQUIRED_RFP_NOUNS = (
 )
 
 
+# =====================================================================
+# 2. PASS 1: DETERMINISTIC PRE-VERIFICATION GATE
+# =====================================================================
+
 def _truncate_to_approx_3000_tokens(text: str, max_chars: int = 12000) -> str:
     """
-    Truncates scraped document text to the first ~3,000 tokens (~12,000 characters).
+    Truncates scraped document text to the first ~3,000 tokens (~12,000 characters)
+    so LLM verification stays fast and within context limits.
     """
     return (text or "").strip()[:max_chars]
 
@@ -94,12 +143,13 @@ def pre_verify_scraped_document(
 ) -> Tuple[bool, Optional[str]]:
     """
     Pass 1 (Deterministic Pre-Verification Gate):
-    Checks URL blacklists, commercial procurement bid disqualifiers, closed solicitation
-    phrases, and expired deadlines before LLM verification.
+    Evaluates a candidate URL and its scraped text BEFORE calling the LLM.
+    Returns `(True, None)` if the document passes, or `(False, rejection_reason)` if rejected.
     """
     url = (scraped.get("url") if scraped else None) or candidate.get("url", "")
     title = (scraped.get("title") if scraped else None) or candidate.get("title", "")
 
+    # Check 1: Domain & URL path blacklist
     if is_url_blacklisted(url, title):
         return False, "URL or title matched blacklist pattern (news/blog/press-release/winners/encyclopedia)"
 
@@ -107,14 +157,17 @@ def pre_verify_scraped_document(
     elig_sec = (scraped.get("eligibility_section") if scraped else "") or ""
     combined_low = f"{title} {synopsis} {elig_sec} {url}".lower()
 
+    # Check 2: Closed / archived / winner announcement phrases
     for closed_p in CLOSED_SOLICITATION_PHRASES:
         if closed_p in combined_low[:3500]:
             return False, f"Document indicates closed or past announcement ('{closed_p}')"
 
+    # Check 3: Commercial vendor procurement contracts (unless explicitly also a grant/fellowship)
     for comm_p in COMMERCIAL_PROCUREMENT_PHRASES:
         if comm_p in combined_low and "grant" not in combined_low and "fellowship" not in combined_low:
             return False, f"Ineligible commercial procurement contract bid ('{comm_p}')"
 
+    # Check 4: Explicit deadline expiration check
     dl = (
         (scraped.get("detected_deadline") if scraped else "")
         or candidate.get("deadline", "")
@@ -123,6 +176,7 @@ def pre_verify_scraped_document(
     if dl == "EXPIRED" or (dl and is_deadline_expired(dl)):
         return False, f"Solicitation deadline has already passed ({dl})"
 
+    # Check 5: Document must contain at least one grant/RFP noun
     has_noun = any(n in combined_low for n in REQUIRED_RFP_NOUNS)
     if not has_noun:
         return False, "Document lacks grant/RFP/funding solicitation terms"
@@ -130,17 +184,23 @@ def pre_verify_scraped_document(
     return True, None
 
 
+# =====================================================================
+# 3. PASS 2: LLM VERIFICATION SCHEMA NORMALIZATION & FALLBACK
+# =====================================================================
+
 def _normalize_verification_result(raw_obj: Dict[str, Any], fallback_deadline: str = "") -> Dict[str, Any]:
     """
-    Enforces the exact Pass-2 Verification JSON schema:
+    Validates and normalizes the LLM's JSON output into the strict 6-field schema:
     {
       "is_open_rfp": bool,
-      "deadline": "YYYY-MM-DD" or null,
+      "deadline": "YYYY-MM-DD" or "Rolling / Open",
       "is_eligible": bool,
       "eligibility_summary": str,
       "match_confidence": float (0.0 - 1.0),
       "rejection_reason": str or null
     }
+    Also double-checks the LLM-extracted deadline so that if the LLM found a past date,
+    `is_open_rfp` is automatically flipped to `False`.
     """
     is_open_rfp = bool(raw_obj.get("is_open_rfp", False))
     is_eligible = bool(raw_obj.get("is_eligible", True))
@@ -152,7 +212,7 @@ def _normalize_verification_result(raw_obj: Dict[str, Any], fallback_deadline: s
     if deadline_str:
         deadline_str = normalize_deadline_iso(deadline_str)
 
-    # Post-check: if LLM extracted a deadline that is in the past, force rejection
+    # Safety check: if the LLM extracted a deadline that is in the past, force rejection
     if deadline_str and is_deadline_expired(deadline_str):
         is_open_rfp = False
         raw_obj["rejection_reason"] = f"Solicitation deadline expired ({deadline_str})"
@@ -161,6 +221,7 @@ def _normalize_verification_result(raw_obj: Dict[str, Any], fallback_deadline: s
     if not elig_summary:
         elig_summary = "Open to eligible grant applicants" if is_eligible else "Applicant eligibility criteria not met"
 
+    # Normalize match_confidence to a float in [0.0, 1.0] (handles both 0.88 and 88)
     try:
         conf = float(raw_obj.get("match_confidence", 0.0))
         if conf > 1.0:
@@ -196,8 +257,8 @@ def _normalize_verification_result(raw_obj: Dict[str, Any], fallback_deadline: s
 
 def _build_fallback_positive_verification(cand: Dict[str, Any], scraped: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Used when the LLM call is unavailable or rate-limited for a candidate that already
-    passed Pass 1 deterministic URL, deadline, and active-RFP checks.
+    Fallback used when no AI API key is connected or when the AI provider is temporarily
+    rate-limited, for a candidate that has already passed all Pass-1 deterministic checks.
     """
     dl = normalize_deadline_iso(cand.get("deadline") or scraped.get("detected_deadline") or "") or "Rolling / Open"
     funder = cand.get("agency_or_funder") or cand.get("source_name") or "Grant Funder"
@@ -213,12 +274,17 @@ def _build_fallback_positive_verification(cand: Dict[str, Any], scraped: Dict[st
     )
 
 
+# =====================================================================
+# 4. PASS 2: SINGLE-DOCUMENT & BATCH LLM VERIFICATION ENTRY POINTS
+# =====================================================================
+
 def verify_single_document_with_llm(
     applicant_profile: Dict[str, Any],
     document_payload: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
-    Pass 2 (LLM Post-Scrape Verification Filter) for a single scraped page/PDF summary (~3,000 tokens).
+    Pass 2 (LLM Post-Scrape Verification Filter) for a single scraped page or PDF summary
+    (~3,000 tokens of title, synopsis, and eligibility section).
     Returns the strict 6-field verification JSON object.
     """
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -289,12 +355,12 @@ def verify_candidates_two_pass(
     progress_callback: Optional[Callable[[str], None]] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Executes the full Two-Pass Verification Pipeline across candidate grants:
+    Executes the full Two-Pass Verification Pipeline across a list of candidate grants:
     - Pass 1: Scrapes live HTML / downloadable PDF guidelines (~3,000 tokens of title,
       synopsis, and eligibility section) with snippet fallback, and applies deterministic
       blacklist, expiration, and commercial-contract filters.
-    - Pass 2: Evaluates each passing document against the structured Applicant Profile via
-      the LLM verification gate, enforcing the strict 6-field JSON output schema.
+    - Pass 2: Evaluates passing documents in batches of 8 against the structured Applicant
+      Profile via the connected LLM, attaching the 6-field `verification` dictionary to each candidate.
     """
     if not candidates:
         return []
@@ -323,6 +389,7 @@ def verify_candidates_two_pass(
 
         scraped: Optional[Dict[str, Any]] = None
         if is_structured_api:
+            # Official federal APIs already provide structured title, abstract, agency, and closeDate
             scraped = {
                 "url": cand.get("url", ""),
                 "doc_type": "api",
@@ -333,6 +400,7 @@ def verify_candidates_two_pass(
                 "document_text": f"{cand.get('title', '')}\n{cand.get('snippet', '')}",
             }
         else:
+            # Web & RSS candidates: scrape live HTML and any linked PDF guidelines
             scraped = scrape_document_content(
                 cand.get("url", ""),
                 fallback_title=cand.get("title", ""),
@@ -345,6 +413,7 @@ def verify_candidates_two_pass(
         if not ok_pre:
             continue
 
+        # Enrich candidate with canonical URL, detected deadline, and fuller synopsis from scrape
         cand["url"] = scraped.get("url") or cand["url"]
         if scraped.get("detected_deadline") and scraped["detected_deadline"] != "EXPIRED" and not cand.get("deadline"):
             cand["deadline"] = scraped["detected_deadline"]
@@ -360,7 +429,7 @@ def verify_candidates_two_pass(
     today_str = datetime.now().strftime("%Y-%m-%d")
     verified_results: List[Dict[str, Any]] = []
 
-    # If no AI key is connected, accept all Pass-1-verified candidates
+    # If no AI key is connected, accept all Pass-1-verified candidates using deterministic fallback
     if not auth.get("connected"):
         for cand, scraped in pass1_survivors:
             ver = _build_fallback_positive_verification(cand, scraped)
@@ -460,6 +529,7 @@ Return strictly valid JSON in this exact format:
             except Exception:
                 pass
 
+        # Any candidate in the batch not returned by the LLM falls back to Pass-1 verification
         for l_idx, (cand, scraped) in enumerate(batch):
             if l_idx in handled_local_indices:
                 continue
@@ -472,8 +542,8 @@ Return strictly valid JSON in this exact format:
 
 def _apply_verification_to_candidate(cand: Dict[str, Any], ver: Dict[str, Any]) -> None:
     """
-    Attaches the strict 6-field verification payload to `cand` and maps it to the
-    database score/reason/deadline fields.
+    Attaches the normalized 6-field verification payload (`ver`) to `cand` and maps
+    `match_confidence` (0.0–1.0) to `ai_score` (0–100) for database storage and UI display.
     """
     cand["verification"] = ver
     is_accepted = bool(ver["is_open_rfp"] and ver["is_eligible"] and ver["rejection_reason"] is None)
@@ -490,3 +560,4 @@ def _apply_verification_to_candidate(cand: Dict[str, Any], ver: Dict[str, Any]) 
         cand["ai_reason"] = f"Eligibility: {ver['eligibility_summary']} (Match Confidence: {score_int}%)"
     else:
         cand["ai_reason"] = f"Rejected: {ver.get('rejection_reason') or 'Ineligible or inactive solicitation'}"
+

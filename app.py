@@ -1,3 +1,33 @@
+"""
+===============================================================================
+app.py — FastAPI Web Server, REST API Endpoints & Background Daily Scheduler
+===============================================================================
+Purpose:
+    Serves the single-page web application (`static/index.html`) and exposes
+    the JSON API endpoints used by the frontend across both phases of GrantFinder:
+
+    - Authentication & Multi-Provider AI Endpoints:
+      * `GET  /api/auth/status`: Returns connection state for Gemini, OpenAI, and Claude.
+      * `POST /api/auth/quick-connect`: Verifies & saves an API key or switches providers.
+      * `POST /api/auth/logout`: Clears stored API credentials.
+
+    - Phase 1 (Guided AI Interview) & Phase 2 (Crawler Activation) Endpoints:
+      * `GET  /api/concierge/state`: Returns current interview stage, extracted
+        applicant profile, chat history, and active search queries.
+      * `POST /api/concierge/chat`: Sends a user message to `query_generator.py`
+        and returns updated structured criteria (`applicant_type`, `project_domain`,
+        `target_geography`, `funding_range`, `search_queries`, `negative_terms`).
+      * `POST /api/concierge/activate-crawler`: Locks in the search queries,
+        switches to Phase 2, and launches `crawl_manager.run_crawl()` in the background.
+
+    - Grant, Tagword, Source & Settings CRUD Endpoints:
+      * `GET  /api/overview`, `GET /api/grants`, `PATCH /api/grants/{id}`
+      * `GET/POST/PATCH/DELETE /api/tagwords`
+      * `GET/POST/PATCH/DELETE /api/sources`, `POST /api/sources/discover`
+      * `POST /api/crawl`: Manually triggers a live crawl run.
+===============================================================================
+"""
+
 import json
 import threading
 import time
@@ -47,6 +77,7 @@ app = FastAPI(title="AI Grant Search Interviewer & RFP Web Crawler")
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
 
 
 class TagwordCreate(BaseModel):

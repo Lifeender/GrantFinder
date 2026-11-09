@@ -1,3 +1,32 @@
+"""
+===============================================================================
+crawler.py — Multi-Source Grant & RFP Web Crawler Orchestrator
+===============================================================================
+Purpose:
+    This module is Stage 4 (the top-level orchestrator) of the GrantFinder
+    pipeline. When `crawl_manager.run_crawl()` is triggered (manually or on the
+    daily schedule), it executes a 7-step workflow:
+    1. Extracts structured applicant criteria (`query_generator.py`).
+    2. Uses the connected AI to discover new foundation/fellowship grant portals.
+    3. Executes Boolean & portal-targeted web searches (`search_engine.py`) across
+       DuckDuckGo, Bing RSS, and DuckDuckGo HTML fallback.
+    4. Crawls all enabled HTML & RSS grant portals (e.g. Philanthropy News Digest,
+       FundsforNGOs, RWJF, Russell Sage, Spencer, Sloan, Simons, Ford, NIH Guide).
+    5. Queries official federal APIs (Federal Register NOFO API, NSF Active Funding,
+       Challenge.gov Open Prizes API, and Grants.gov REST API v1).
+    6. Runs the Two-Pass Verification Filter (`verifier.py`) on candidate documents
+       (prioritizing diverse non-Grants.gov sources first).
+    7. Saves only verified, open, eligible grants meeting `ai_min_match_score` to
+       SQLite (`database.py`) and dispatches Email/SMS notifications (`notifier.py`).
+
+How to Customize:
+    - To adjust how keywords match grant text (including prefix/stem matching),
+      edit `_extract_core_tokens()` and `match_tagwords()`.
+    - To add a new official REST API source, create a `search_<name>_api()` function
+      and call it in Step 5 of `CrawlManager.run_crawl()`.
+===============================================================================
+"""
+
 import re
 import time
 import urllib.parse
@@ -41,6 +70,12 @@ from verifier import (
     verify_candidates_two_pass,
 )
 
+# =====================================================================
+# 1. KEYWORD TOKENIZATION & MATCHING HELPERS
+# =====================================================================
+
+# Phrases indicating that a discovered webpage is itself a directory of multiple grants
+# (so the crawler can save it as a reusable source in the `sources` table).
 SOURCE_PORTAL_INDICATORS = [
     "grant directory",
     "grants database",
@@ -54,6 +89,7 @@ SOURCE_PORTAL_INDICATORS = [
     "grant programs",
 ]
 
+# Stopwords stripped from multi-word search queries when extracting core thematic tokens.
 GENERIC_QUERY_STOPWORDS = {
     "grant",
     "grants",
@@ -101,10 +137,12 @@ GENERIC_QUERY_STOPWORDS = {
 
 
 def extract_deadline(text: str) -> str:
+    """Wrapper around `search_engine.extract_deadline_from_text`."""
     return extract_deadline_from_text(text)
 
 
 def is_valid_rfp_url(url: str, title: str = "") -> bool:
+    """Returns True if `url` and `title` are NOT blacklisted."""
     return not is_url_blacklisted(url, title)
 
 
@@ -117,7 +155,7 @@ def is_active_rfp_candidate(
 ) -> bool:
     """
     Fast pre-filter checking URL blacklists, negative exclusion terms, closed solicitation
-    phrases, expired deadlines, and required RFP/application signals.
+    phrases, expired deadlines, and required RFP/application nouns.
     """
     cand = {
         "title": title,
@@ -130,6 +168,12 @@ def is_active_rfp_candidate(
 
 
 def _extract_core_tokens(phrase: str) -> List[str]:
+    """
+    Extracts the meaningful subject-matter tokens from a search query by:
+    1. Fixing common typos (`clean_query_typos`).
+    2. Removing generic RFP stopwords (`grant`, `rfp`, `nofo`, `solicitation`, etc.).
+    For example: `'community engagemnet ("RFP" OR "grant")'` -> `['community', 'engagement']`.
+    """
     cleaned = clean_query_typos(re.sub(r'\(".*?"\)', " ", phrase or ""))
     words = re.findall(r"[a-z0-9]{3,}", cleaned.lower())
     core = [w for w in words if w not in GENERIC_QUERY_STOPWORDS]
@@ -137,6 +181,10 @@ def _extract_core_tokens(phrase: str) -> List[str]:
 
 
 def _token_matches_text(tok: str, low_text: str) -> bool:
+    """
+    Checks if a keyword token `tok` matches `low_text`, supporting 6-character stem
+    matching (e.g., `'engagement'` matches `'engaging'` / `'engaged'`).
+    """
     if tok in low_text:
         return True
     if len(tok) >= 6 and tok[:6] in low_text:
@@ -145,6 +193,12 @@ def _token_matches_text(tok: str, low_text: str) -> bool:
 
 
 def match_tagwords(text: str, tagwords: List[str]) -> List[str]:
+    """
+    Determines which user search topics (`tagwords`) match a candidate grant's title/snippet.
+    Uses both exact substring matching and tokenized stem matching so that multi-word
+    queries like `'community engagement RFP'` still match a grant titled
+    `'Community-Engaged Research Grants'`.
+    """
     low = (text or "").lower()
     matched = []
     for kw in tagwords:
@@ -178,15 +232,20 @@ def has_rfp_indicator(text: str, indicators: List[str]) -> bool:
 
 
 def _url_already_seen(url: str) -> bool:
+    """Returns True if `url` is already saved in the SQLite `grants` table."""
     with get_conn() as conn:
         row = conn.execute("SELECT id FROM grants WHERE url = ?", (url.strip(),)).fetchone()
         return row is not None
 
 
+# =====================================================================
+# 2. OFFICIAL FEDERAL & PUBLIC GRANT API INTEGRATIONS
+# =====================================================================
+
 def search_grants_gov_api(keyword: str, max_rows: int = 6) -> List[Dict[str, Any]]:
     """
-    Queries the official Grants.gov REST API v1 strictly for actively posted grants
-    whose closing date has not passed.
+    Queries the official Grants.gov REST API v1 (`oppStatuses: "posted"`) strictly for
+    actively posted federal grants whose closing date has not passed.
     """
     api_url = "https://api.grants.gov/v1/api/search2"
     core_kw = " ".join(_extract_core_tokens(keyword)[:5]) or keyword
@@ -242,6 +301,7 @@ def search_grants_gov_api(keyword: str, max_rows: int = 6) -> List[Dict[str, Any
     except Exception:
         pass
     return found
+
 
 
 def search_federal_register_api(keyword: str, per_page: int = 6) -> List[Dict[str, Any]]:
