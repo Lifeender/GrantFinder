@@ -500,6 +500,8 @@ def insert_grant_if_new(
     snippet: str = "",
     ai_score: int = 0,
     ai_reason: str = "",
+    eligibility_summary: str = "",
+    match_confidence: float = 0.0,
 ) -> Optional[Dict[str, Any]]:
     now = datetime.now().isoformat(timespec="seconds")
     url = url.strip()
@@ -513,16 +515,33 @@ def insert_grant_if_new(
             combined = ", ".join(sorted(set(old_tags + matched_tags)))
             if combined != existing["matched_tags"] or (ai_score > existing["ai_score"]):
                 conn.execute(
-                    "UPDATE grants SET matched_tags = ?, ai_score = MAX(ai_score, ?), ai_reason = CASE WHEN ? != '' THEN ? ELSE ai_reason END WHERE id = ?",
-                    (combined, ai_score, ai_reason, ai_reason, existing["id"]),
+                    """
+                    UPDATE grants
+                    SET matched_tags = ?,
+                        ai_score = MAX(ai_score, ?),
+                        ai_reason = CASE WHEN ? != '' THEN ? ELSE ai_reason END,
+                        eligibility_summary = CASE WHEN ? != '' THEN ? ELSE eligibility_summary END,
+                        match_confidence = MAX(match_confidence, ?)
+                    WHERE id = ?
+                    """,
+                    (
+                        combined,
+                        ai_score,
+                        ai_reason,
+                        ai_reason,
+                        eligibility_summary,
+                        eligibility_summary,
+                        float(match_confidence),
+                        existing["id"],
+                    ),
                 )
             return None
 
         conn.execute(
             """
             INSERT INTO grants
-            (title, url, source_name, agency_or_funder, deadline, snippet, matched_tags, ai_score, ai_reason, status, starred, notified, discovered_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', 0, 0, ?)
+            (title, url, source_name, agency_or_funder, deadline, snippet, matched_tags, ai_score, ai_reason, eligibility_summary, match_confidence, status, starred, notified, discovered_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', 0, 0, ?)
             """,
             (
                 title.strip()[:300],
@@ -534,6 +553,8 @@ def insert_grant_if_new(
                 tags_str,
                 ai_score,
                 ai_reason.strip()[:400],
+                eligibility_summary.strip()[:280],
+                float(match_confidence),
                 now,
             ),
         )

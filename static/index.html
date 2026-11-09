@@ -1363,14 +1363,18 @@
 
       container.innerHTML = data.grants.map(g => {
         const score = g.ai_score || 0;
+        const confStr = g.match_confidence ? ` (${Number(g.match_confidence).toFixed(2)} conf)` : '';
         const scoreBadge = score > 0
-          ? `<span class="badge ${score >= 75 ? 'badge-score-high' : 'badge-score-mid'}">✨ ${score}% AI Match</span>`
+          ? `<span class="badge ${score >= 75 ? 'badge-score-high' : 'badge-score-mid'}">✓ Verified Open RFP &bull; ${score}% Match${confStr}</span>`
+          : '';
+        const eligBadge = g.eligibility_summary
+          ? `<span class="badge badge-tag">🏛️ ${g.eligibility_summary}</span>`
           : '';
         const tags = (g.matched_tags || '').split(',').filter(Boolean).map(
           t => `<span class="badge badge-tag">${t.trim()}</span>`
         ).join('');
         const deadlineBadge = g.deadline
-          ? `<span class="badge badge-deadline">Deadline: ${g.deadline}</span>`
+          ? `<span class="badge badge-deadline">Closes: ${g.deadline}</span>`
           : '';
         return `
           <div class="grant-item">
@@ -1381,9 +1385,9 @@
                 ${g.agency_or_funder ? ` &bull; Funder: <strong>${g.agency_or_funder}</strong>` : ''}
                 &bull; Found: ${g.discovered_at.split('T')[0]}
               </div>
-              ${g.ai_reason ? `<div class="grant-ai-box"><strong>AI Match Analysis:</strong> ${g.ai_reason}</div>` : ''}
+              ${g.ai_reason ? `<div class="grant-ai-box"><strong>Two-Pass Eligibility &amp; RFP Verification:</strong> ${g.ai_reason}</div>` : ''}
               ${g.snippet ? `<div class="grant-snippet">${g.snippet}</div>` : ''}
-              <div class="badges">${scoreBadge} ${deadlineBadge} ${tags}</div>
+              <div class="badges">${scoreBadge} ${deadlineBadge} ${eligBadge} ${tags}</div>
             </div>
             <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end;">
               <button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;" onclick="toggleStar(${g.id}, ${!g.starred})">

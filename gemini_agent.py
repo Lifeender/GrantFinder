@@ -770,117 +770,14 @@ def _parse_json_object(raw: str) -> Dict[str, Any]:
 
 def chat_with_grant_concierge(user_message: str) -> Dict[str, Any]:
     """
-    Phase 1 AI Interviewer: Asks the user targeted step-by-step questions to
-    narrow down their possible grant search queries BEFORE activating the web crawler.
+    Phase 1 Guided Conversation & Structured Criteria Extraction:
+    Delegates to `query_generator.run_guided_interview_turn` to extract statutory
+    `applicant_type`, `project_domain`, `target_geography`, and `funding_range`,
+    and generate structured `search_queries`, `negative_terms`, and `domain_filters`.
     """
-    settings = get_settings()
-    try:
-        history: List[Dict[str, Any]] = json.loads(settings.get("ai_chat_history_json", "[]") or "[]")
-    except Exception:
-        history = []
+    from query_generator import run_guided_interview_turn
 
-    current_profile = settings.get("ai_profile_json", "")
-    user_turns = sum(1 for m in history if m.get("role") == "user") + 1
-
-    system_prompt = """
-You are an expert AI Grant Search Strategist conducting a step-by-step intake interview BEFORE the program transforms into an automated Grant RFP Web Crawler.
-Your sole job right now is to ask smart, targeted questions (one question at a time) to narrow down the user's grant search queries so the crawler doesn't return noisy or irrelevant grants.
-
-Follow this 4-stage narrowing funnel:
-- Stage 1 (Broad Topic -> Specific Subfields): If the user just gave a broad topic (like "Economics" or "Clean Energy" or "Education"), ask which specific sub-areas, themes, or research questions they care about most.
-- Stage 2 (Applicant Eligibility & Level): Ask who the applicant is (e.g., Undergraduate student, Graduate student, PhD/Postdoc, University Faculty, 501(c)(3) Nonprofit, Small Business/Startup, Local Government) and any geographic/institutional focus.
-- Stage 3 (Grant Type, Award Size & Exclusions): Ask what kind of funding mechanism they want (e.g., research grant, summer fellowship/stipend, project implementation RFP, dissertation award, travel grant) and anything they want to exclude.
-- Stage 4 (Ready to Launch): Once you have answers covering their topic, applicant type/level, and funding mechanism (usually by turn 3 or 4, or earlier if the user already gave all details upfront), set "ready_to_launch": true, summarize the final narrowed search queries, and tell them they can click "Lock In Queries & Launch Web Crawler" (or ask for any final tweaks).
-
-With EVERY turn, update the `search_queries` array to show how the queries are being narrowed down based on what you know so far, and provide 3 to 4 `suggested_answers` (short clickable answers to the question you just asked so the user can either click one or type their own).
-
-Respond strictly in valid JSON matching this schema:
-{
-  "reply": "Your conversational response + your next single narrowing question (or final confirmation if ready_to_launch is true).",
-  "stage": 2,
-  "ready_to_launch": false,
-  "suggested_answers": [
-    "Short clickable option 1 answering your question",
-    "Short clickable option 2",
-    "Short clickable option 3",
-    "Short clickable option 4"
-  ],
-  "profile": {
-    "summary": "Clear summary of who the user is and the exact grants/RFPs we are narrowing down to.",
-    "organization_type": "e.g. Undergraduate Student, 501(c)(3) Nonprofit, Small Business, Faculty Researcher, etc.",
-    "geography": "e.g. United States, Any, State-specific",
-    "funding_range": "e.g. Fellowships / Stipends, $5k-$50k, Any",
-    "must_match_criteria": ["list of narrowed requirements gathered so far"],
-    "avoid_criteria": ["list of things to exclude based on their profile"],
-    "search_queries": [
-      "5 to 8 progressively narrowed, high-precision search phrases (e.g. 'undergraduate economics fellowship', 'public policy undergraduate research', 'economic policy internship stipend')"
-    ]
-  }
-}
-"""
-
-    history.append({"role": "user", "text": user_message})
-    convo_text = "\n".join(
-        f"{m['role'].upper()}: {m['text']}" for m in history[-12:]
-    )
-    prompt = (
-        f"User Turn Number: {user_turns}\n"
-        f"Current Saved Profile JSON: {current_profile or 'None'}\n\n"
-        f"Interview Conversation So Far:\n{convo_text}\n\n"
-        f"Produce the JSON response:"
-    )
-
-    ok, raw = call_gemini(system_prompt, prompt, response_json=True, temperature=0.3)
-    if not ok:
-        return {"ok": False, "error": raw}
-
-    try:
-        parsed = _parse_json_object(raw)
-    except Exception:
-        return {"ok": False, "error": f"Could not parse AI response: {raw[:200]}"}
-
-    reply = parsed.get("reply", "Got it! Let's narrow that down further.")
-    stage = int(parsed.get("stage", min(4, user_turns + 1)))
-    ready_to_launch = bool(parsed.get("ready_to_launch", user_turns >= 3))
-    suggested_answers = parsed.get("suggested_answers") or []
-    profile = parsed.get("profile") or {}
-
-    history.append(
-        {
-            "role": "assistant",
-            "text": reply,
-            "suggested_answers": suggested_answers,
-            "stage": stage,
-            "ready_to_launch": ready_to_launch,
-        }
-    )
-
-    search_queries = profile.get("search_queries") or []
-    if search_queries:
-        replace_ai_tagwords(search_queries, category="AI Narrowed")
-
-    avoid_list = profile.get("avoid_criteria") or []
-    updates: Dict[str, Any] = {
-        "interview_stage": str(stage),
-        "ai_chat_history_json": json.dumps(history[-20:]),
-        "ai_profile_json": json.dumps(profile),
-        "ai_user_goal_prompt": profile.get("summary", user_message),
-        "ai_concierge_enabled": "true",
-    }
-    if avoid_list:
-        base_exclude = "closed, archived, past award, winners announced, expired"
-        updates["exclude_words"] = base_exclude + ", " + ", ".join(avoid_list)
-
-    update_settings(updates)
-    return {
-        "ok": True,
-        "reply": reply,
-        "stage": stage,
-        "ready_to_launch": ready_to_launch,
-        "suggested_answers": suggested_answers,
-        "profile": profile,
-        "history": history[-20:],
-    }
+    return run_guided_interview_turn(user_message)
 
 
 def discover_sources_and_queries_with_ai(tagwords: List[str]) -> Dict[str, Any]:
@@ -904,9 +801,9 @@ Given the user's grant profile and search topics, recommend specific, real, high
 
 STRICT RULES FOR SOURCES:
 - Every URL in `sources` MUST be a dedicated grant/fellowship/RFP opportunities page where applicants can find or apply for active funding (e.g., `/grants`, `/funding-opportunities`, `/rfps`, `/fellowships`, `/apply`).
-- NEVER include Wikipedia, encyclopedias, general news outlets, academic paper repositories, job boards, or generic organization homepages without grant listings.
+- NEVER include Wikipedia, encyclopedias, general news outlets, academic paper repositories, job boards, `/news/`, `/blog/`, `/press-releases/`, `/winners/`, or generic organization homepages without grant listings.
 
-Also generate 6 diverse, high-signal web search queries designed to uncover CURRENTLY OPEN RFPs, fellowships, foundation grants, and calls for proposals with active/upcoming deadlines.
+Also generate 5 diverse, high-signal web search queries combining domain keywords with explicit RFP signifiers ("RFP", "Notice of Funding Opportunity", "NOFO", "solicitation", "Grant Guidelines").
 
 Respond strictly in valid JSON matching this schema:
 {
@@ -922,7 +819,7 @@ Respond strictly in valid JSON matching this schema:
     "Targeted search query 2"
   ]
 }
-Provide 6 to 10 real, well-known foundation/fellowship/grant URLs in `sources` and 6 search strings in `queries`.
+Provide 6 to 10 real, well-known foundation/fellowship/grant URLs in `sources` and 5 search strings in `queries`.
 """
     user_prompt = (
         f"User Grant Profile:\n{profile_raw or goal_prompt or 'General Grants & Fellowships'}\n\n"
@@ -935,13 +832,15 @@ Provide 6 to 10 real, well-known foundation/fellowship/grant URLs in `sources` a
         return {"sources": [], "queries": []}
 
     try:
+        from search_engine import is_url_blacklisted
+
         parsed = _parse_json_object(raw)
         sources = [
             s
             for s in (parsed.get("sources") or [])
             if isinstance(s, dict)
             and str(s.get("url", "")).startswith("http")
-            and "wikipedia.org" not in str(s.get("url", "")).lower()
+            and not is_url_blacklisted(str(s.get("url", "")), str(s.get("name", "")))
             and s.get("name")
         ]
         queries = [
@@ -949,140 +848,18 @@ Provide 6 to 10 real, well-known foundation/fellowship/grant URLs in `sources` a
             for q in (parsed.get("queries") or [])
             if str(q).strip()
         ]
-        return {"sources": sources[:10], "queries": queries[:8]}
+        return {"sources": sources[:10], "queries": queries[:6]}
     except Exception:
         return {"sources": [], "queries": []}
 
 
 def evaluate_grants_batch(grants: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    if not grants:
-        return []
+    """
+    Delegates candidate evaluation to the Post-Scrape Two-Pass Verification Filter (`verifier.py`).
+    """
+    from verifier import verify_candidates_two_pass
 
-    settings = get_settings()
-    profile_raw = settings.get("ai_profile_json", "").strip()
-    goal_prompt = settings.get("ai_user_goal_prompt", "").strip()
-    active_tags = [r["keyword"] for r in list_tagwords(only_enabled=True)]
-    effective_profile = (
-        profile_raw
-        or goal_prompt
-        or (f"Active Grant Search Topics: {', '.join(active_tags)}" if active_tags else "Open Grants, Fellowships, and RFPs")
-    )
-
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    auth = get_google_auth_status()
-    if not auth["connected"]:
-        for g in grants:
-            # Without AI connected, only accept candidates that have a verified deadline or come from official open RFP APIs
-            has_deadline = bool((g.get("deadline") or "").strip())
-            is_official_api = any(
-                s in (g.get("source_name") or "")
-                for s in ("Grants.gov API", "Federal Register", "Challenge.gov API", "NIH Guide", "Philanthropy News Digest", "FundsforNGOs")
-            )
-            if has_deadline or is_official_api:
-                g["is_active_rfp"] = True
-                g["ai_score"] = 72
-                g["ai_reason"] = "Verified open grant/RFP listing matching your search criteria."
-            else:
-                g["is_active_rfp"] = False
-                g["ai_score"] = 0
-                g["ai_reason"] = "Skipped unverified web link (connect an AI key for deep relevance evaluation)."
-        return grants
-
-    system_prompt = f"""
-You are a strict Grant & Active RFP Verification Gatekeeper.
-Today's date is {today_str}.
-
-Given the user's Grant Profile and a list of candidate URLs/snippets, you must verify TWO things for every candidate:
-1. Is it a GENUINE, CURRENTLY ACTIVE/OPEN grant, fellowship, RFP, solicitation, or funding opportunity that an applicant can apply for right now? (`is_active_rfp`: true or false)
-2. How well does it match the user's profile and topic? (`score`: 0 to 100)
-
-MANDATORY REJECTION RULES (MUST set `"is_active_rfp": false` and `"score": 0`):
-- Reject ANY Wikipedia page, encyclopedia entry, dictionary page, textbook, academic journal paper, or general informational/educational article.
-- Reject ANY news article, press release, or blog post announcing PAST grant winners, previous recipients, or already-awarded grants (e.g., "Foundation awards $1M to...", "Meet our 2024 Fellows", "Past Grantees").
-- Reject ANY grant, RFP, or fellowship whose deadline has already passed (before {today_str}) or whose snippet/title indicates applications are closed or archived.
-- Reject ANY generic homepage, "about us" page, donation page, or job/career posting that is not a grant/fellowship/RFP opportunity.
-
-SCORING SCALE (only for genuine, currently open/active RFPs where `is_active_rfp` is true):
-- 80-100: Verified active/open RFP, grant, or fellowship that strongly matches the user's topic and eligibility.
-- 65-79: Verified active/open RFP, grant, or fellowship with a good potential match for the user.
-- 0-64: Weak topic match, wrong applicant eligibility level, closed/expired, or not an actual open RFP.
-
-Return strictly valid JSON in this exact format:
-{{
-  "evaluations": [
-    {{
-      "index": 0,
-      "is_active_rfp": true,
-      "score": 88,
-      "reason": "1 concise sentence explaining why this active RFP/grant fits (or why it was rejected)."
-    }}
-  ]
-}}
-"""
-    chunk_size = 25
-    max_to_evaluate = min(len(grants), 50)
-    evaluated_indices = set()
-
-    for start_idx in range(0, max_to_evaluate, chunk_size):
-        batch = grants[start_idx : start_idx + chunk_size]
-        items_for_prompt = [
-            {
-                "index": start_idx + idx,
-                "title": g.get("title", ""),
-                "url": g.get("url", ""),
-                "source": g.get("source_name", ""),
-                "funder": g.get("agency_or_funder", ""),
-                "deadline": g.get("deadline", ""),
-                "snippet": g.get("snippet", ""),
-            }
-            for idx, g in enumerate(batch)
-        ]
-
-        user_prompt = (
-            f"Today's Date: {today_str}\n\n"
-            f"User Grant Profile:\n{effective_profile}\n\n"
-            f"Candidate Grants to Verify & Score:\n{json.dumps(items_for_prompt, indent=2)}"
-        )
-
-        ok, raw = call_gemini(system_prompt, user_prompt, response_json=True, temperature=0.1)
-        if not ok:
-            continue
-
-        try:
-            parsed = _parse_json_object(raw)
-            for item in parsed.get("evaluations") or []:
-                if "index" in item:
-                    idx = int(item["index"])
-                    if 0 <= idx < len(grants):
-                        is_active = bool(item.get("is_active_rfp", True))
-                        raw_score = int(item.get("score", 0))
-                        if not is_active:
-                            raw_score = 0
-                        grants[idx]["is_active_rfp"] = is_active and raw_score >= 60
-                        grants[idx]["ai_score"] = raw_score
-                        grants[idx]["ai_reason"] = str(item.get("reason", ""))[:300]
-                        evaluated_indices.add(idx)
-        except Exception:
-            continue
-
-    for idx, g in enumerate(grants):
-        if idx not in evaluated_indices:
-            # Never auto-approve unevaluated items unless they came from an official open API with a verified deadline
-            has_deadline = bool((g.get("deadline") or "").strip())
-            is_official_api = any(
-                s in (g.get("source_name") or "")
-                for s in ("Grants.gov API", "Federal Register", "Challenge.gov API")
-            )
-            if has_deadline and is_official_api:
-                g["is_active_rfp"] = True
-                g["ai_score"] = 68
-                g["ai_reason"] = "Active federal grant listing with upcoming deadline."
-            else:
-                g["is_active_rfp"] = False
-                g["ai_score"] = 0
-                g["ai_reason"] = "Not verified as an active RFP."
-
-    return grants
+    return verify_candidates_two_pass(grants)
 
 
 def generate_daily_sms_summary(matching_grants: List[Dict[str, Any]]) -> str:
