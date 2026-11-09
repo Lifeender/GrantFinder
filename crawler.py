@@ -19,7 +19,7 @@ from database import (
 )
 from notifier import send_crawl_notifications
 from gemini_agent import discover_sources_and_queries_with_ai
-from query_generator import extract_structured_search_criteria
+from query_generator import extract_structured_search_criteria, clean_query_typos
 from search_engine import (
     USER_AGENT,
     HEADERS,
@@ -37,7 +37,6 @@ from search_engine import (
 from verifier import (
     CLOSED_SOLICITATION_PHRASES,
     REQUIRED_RFP_NOUNS,
-    REQUIRED_APPLICATION_SIGNALS,
     pre_verify_scraped_document,
     verify_candidates_two_pass,
 )
@@ -131,32 +130,40 @@ def is_active_rfp_candidate(
 
 
 def _extract_core_tokens(phrase: str) -> List[str]:
-    cleaned = re.sub(r'\(".*?"\)', " ", phrase or "")
+    cleaned = clean_query_typos(re.sub(r'\(".*?"\)', " ", phrase or ""))
     words = re.findall(r"[a-z0-9]{3,}", cleaned.lower())
     core = [w for w in words if w not in GENERIC_QUERY_STOPWORDS]
     return core if core else words
+
+
+def _token_matches_text(tok: str, low_text: str) -> bool:
+    if tok in low_text:
+        return True
+    if len(tok) >= 6 and tok[:6] in low_text:
+        return True
+    return False
 
 
 def match_tagwords(text: str, tagwords: List[str]) -> List[str]:
     low = (text or "").lower()
     matched = []
     for kw in tagwords:
-        kw_low = kw.lower().strip()
-        if not kw_low:
+        kw_clean = clean_query_typos(kw).lower().strip()
+        if not kw_clean:
             continue
-        if kw_low in low:
+        if kw_clean in low:
             matched.append(kw)
             continue
-        core_tokens = _extract_core_tokens(kw_low)
+        core_tokens = _extract_core_tokens(kw_clean)
         if not core_tokens:
             continue
-        hits = sum(1 for tok in core_tokens if tok in low)
+        hits = sum(1 for tok in core_tokens if _token_matches_text(tok, low))
         if (len(core_tokens) == 1 and hits >= 1) or (len(core_tokens) >= 2 and hits >= 2):
             matched.append(kw)
-        elif hits >= 1 and any(w in low for w in ("grant", "fellowship", "rfp", "nofo", "award", "funding", "stipend", "solicitation")):
-            longest_token = max(core_tokens, key=len)
-            if len(longest_token) >= 5 and longest_token in low:
-                matched.append(kw)
+        elif hits >= 1 and any(
+            w in low for w in ("grant", "fellowship", "rfp", "nofo", "award", "funding", "stipend", "solicitation", "foundation")
+        ):
+            matched.append(kw)
     return matched
 
 
@@ -787,6 +794,8 @@ class CrawlManager:
                         _register_web_hit(hit, q_topic, q_label)
                     time.sleep(0.15)
 
+            all_match_tags = list(dict.fromkeys([clean_query_typos(t) for t in tagwords if clean_query_typos(t)] + structured_queries))
+
             # 4. Crawl Configured & Discovered Grant Sources (RSS & HTML Portals + Embedded PDFs)
             active_sources = list_sources(only_enabled=True)
             auto_crawl_disc = settings.get("auto_crawl_discovered_sources", "true").lower() == "true"
@@ -799,7 +808,7 @@ class CrawlManager:
                     continue
                 self.current_step = f"Crawling source: {src['name'][:45]}..."
                 found_items = crawl_html_or_rss_source(
-                    src, tagwords, rfp_indicators, exclude_words
+                    src, all_match_tags, rfp_indicators, exclude_words
                 )
                 for g in found_items:
                     if not _url_already_seen(g["url"]) and g["url"] not in candidates:
@@ -812,33 +821,42 @@ class CrawlManager:
                         (now_ts, src["id"]),
                     )
 
+            # Deduplicate clean core keywords for official API searches (e.g. 'community engagement')
+            api_keywords: List[str] = []
+            for raw_q in all_match_tags:
+                core_str = " ".join(_extract_core_tokens(raw_q)[:3]).strip()
+                if core_str and core_str not in api_keywords:
+                    api_keywords.append(core_str)
+            if not api_keywords:
+                api_keywords = [clean_query_typos(tagwords[0])]
+
             # 5. Query Official Funding APIs (Federal Register NOFOs, NSF Active Solicitations, Challenge.gov, Grants.gov)
-            for kw in structured_queries[:5]:
+            for kw in api_keywords[:5]:
                 self.current_step = f"Querying Federal Register, NSF & Challenge.gov APIs for '{kw[:38]}'..."
-                for h in search_federal_register_api(kw, per_page=5):
+                for h in search_federal_register_api(kw, per_page=6):
                     if not _url_already_seen(h["url"]) and h["url"] not in candidates:
-                        h["matched_tags"] = match_tagwords(f"{h['title']} {h['snippet']}", tagwords) or [kw]
+                        h["matched_tags"] = match_tagwords(f"{h['title']} {h['snippet']}", all_match_tags) or [kw]
                         candidates[h["url"]] = h
 
                 for h in search_nsf_funding_api(kw, max_rows=4):
                     if not _url_already_seen(h["url"]) and h["url"] not in candidates:
-                        h["matched_tags"] = match_tagwords(f"{h['title']} {h['snippet']}", tagwords) or [kw]
+                        h["matched_tags"] = match_tagwords(f"{h['title']} {h['snippet']}", all_match_tags) or [kw]
                         candidates[h["url"]] = h
 
                 for h in search_challenge_gov_api(kw, max_rows=4):
                     if not _url_already_seen(h["url"]) and h["url"] not in candidates:
-                        h["matched_tags"] = match_tagwords(f"{h['title']} {h['snippet']}", tagwords) or [kw]
+                        h["matched_tags"] = match_tagwords(f"{h['title']} {h['snippet']}", all_match_tags) or [kw]
                         candidates[h["url"]] = h
 
             if settings.get("search_grants_gov", "true").lower() == "true":
-                for kw in structured_queries[:5]:
+                for kw in api_keywords[:5]:
                     self.current_step = f"Querying Grants.gov API for active posted grants in '{kw[:38]}'..."
-                    hits = search_grants_gov_api(kw, max_rows=5)
+                    hits = search_grants_gov_api(kw, max_rows=8)
                     for h in hits:
                         if _url_already_seen(h["url"]) or h["url"] in candidates:
                             continue
                         combined = f"{h['title']} {h['snippet']} {h['agency_or_funder']}"
-                        matched = match_tagwords(combined, tagwords) or [kw]
+                        matched = match_tagwords(combined, all_match_tags) or [kw]
                         h["matched_tags"] = matched
                         candidates[h["url"]] = h
 
