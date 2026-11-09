@@ -86,12 +86,12 @@ DEFAULT_SOURCES = [
         "notes": "Searches live federal agency Notices of Funding Opportunity across all US departments",
     },
     {
-        "name": "National Science Foundation (NSF) — Solicitations & Awards API",
+        "name": "National Science Foundation (NSF) — Active Funding Solicitations",
         "url": "https://www.nsf.gov/funding",
         "source_type": "api",
         "enabled": 1,
         "is_discovered": 0,
-        "notes": "Searches NSF research grants, fellowships, and active program solicitations",
+        "notes": "Searches active NSF funding opportunities, fellowships, and open program solicitations",
     },
     {
         "name": "NIH Guide for Grants & Contracts — Active Funding Opportunities",
@@ -282,6 +282,75 @@ def init_db() -> None:
         # Ensure Challenge.gov is upgraded to source_type='api' if it existed as 'html'
         conn.execute(
             "UPDATE sources SET source_type = 'api' WHERE url = 'https://www.challenge.gov'"
+        )
+
+    purge_invalid_grants_and_sources()
+
+
+def purge_invalid_grants_and_sources() -> None:
+    """
+    Removes any previously saved grants or auto-discovered sources from non-RFP
+    domains (e.g., Wikipedia, social media, academic paper repositories, job boards),
+    past NSF award records, or rejected/low-score items.
+    """
+    junk_url_patterns = (
+        "%wikipedia.org%",
+        "%wikimedia.org%",
+        "%wikidata.org%",
+        "%britannica.com%",
+        "%reddit.com%",
+        "%quora.com%",
+        "%youtube.com%",
+        "%facebook.com%",
+        "%twitter.com%",
+        "%x.com/%",
+        "%linkedin.com%",
+        "%instagram.com%",
+        "%tiktok.com%",
+        "%pinterest.com%",
+        "%amazon.com%",
+        "%indeed.com%",
+        "%glassdoor.com%",
+        "%ziprecruiter.com%",
+        "%researchgate.net%",
+        "%academia.edu%",
+        "%jstor.org%",
+        "%arxiv.org%",
+        "%scholar.google.%",
+        "%pubmed.ncbi.nlm.nih.gov%",
+        "%sciencedirect.com%",
+        "%link.springer.com%",
+        "%tandfonline.com%",
+        "%investopedia.com%",
+        "%dictionary.com%",
+        "%merriam-webster.com%",
+        "%/wiki/%",
+        "%nsf.gov/awardsearch/showAward%",
+        "%/past-recipients%",
+        "%/past-grantees%",
+        "%/past-fellows%",
+    )
+    with get_conn() as conn:
+        for pat in junk_url_patterns:
+            conn.execute("DELETE FROM grants WHERE LOWER(url) LIKE ?", (pat,))
+            conn.execute(
+                "DELETE FROM sources WHERE is_discovered = 1 AND LOWER(url) LIKE ?",
+                (pat,),
+            )
+        conn.execute(
+            "DELETE FROM grants WHERE LOWER(title) LIKE '%wikipedia%' OR LOWER(source_name) LIKE '%wikipedia%'"
+        )
+        conn.execute(
+            "DELETE FROM sources WHERE is_discovered = 1 AND LOWER(name) LIKE '%wikipedia%'"
+        )
+        # Purge unstarred grants that scored below the minimum relevance threshold
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'ai_min_match_score'"
+        ).fetchone()
+        min_score = int((row["value"] if row else "65") or 65)
+        conn.execute(
+            "DELETE FROM grants WHERE starred = 0 AND ai_score < ?",
+            (min_score,),
         )
 
 

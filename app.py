@@ -532,9 +532,13 @@ def api_discover_sources() -> Dict[str, Any]:
     res = discover_sources_and_queries_with_ai(tagwords)
     added = []
     for src_obj in res.get("sources") or []:
+        src_url = str(src_obj.get("url", "")).strip()
+        src_name = str(src_obj.get("name", ""))[:120]
+        if not is_valid_rfp_url(src_url, src_name):
+            continue
         s = add_source(
-            name=str(src_obj.get("name", ""))[:120],
-            url=str(src_obj.get("url", "")).strip(),
+            name=src_name,
+            url=src_url,
             source_type="html",
             is_discovered=1,
             matched_tags=", ".join(tagwords[:3]),

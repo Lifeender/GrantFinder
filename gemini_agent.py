@@ -900,17 +900,21 @@ def discover_sources_and_queries_with_ai(tagwords: List[str]) -> Dict[str, Any]:
 
     system_prompt = """
 You are an expert Grant & Fellowship Discovery Researcher.
-Given the user's grant profile and search topics, recommend specific, real, high-value NON-Grants.gov funding sources (such as private foundations, philanthropic funds, research institutes, professional associations, fellowship directories, university/national academies, or corporate grant portals) that actively offer grants, fellowships, or RFPs in this field.
+Given the user's grant profile and search topics, recommend specific, real, high-value NON-Grants.gov funding portals (such as private foundations, philanthropic funds, research institutes, professional associations, fellowship directories, university/national academies, or corporate grant portals) that actively offer open grants, fellowships, or RFPs in this field.
 
-Also generate 6 diverse, high-signal web search queries designed to uncover open RFPs, fellowships, foundation grants, and calls for proposals across the wider web (outside Grants.gov).
+STRICT RULES FOR SOURCES:
+- Every URL in `sources` MUST be a dedicated grant/fellowship/RFP opportunities page where applicants can find or apply for active funding (e.g., `/grants`, `/funding-opportunities`, `/rfps`, `/fellowships`, `/apply`).
+- NEVER include Wikipedia, encyclopedias, general news outlets, academic paper repositories, job boards, or generic organization homepages without grant listings.
+
+Also generate 6 diverse, high-signal web search queries designed to uncover CURRENTLY OPEN RFPs, fellowships, foundation grants, and calls for proposals with active/upcoming deadlines.
 
 Respond strictly in valid JSON matching this schema:
 {
   "sources": [
     {
-      "name": "Organization / Foundation Name - Grants or Fellowships Page",
+      "name": "Organization / Foundation Name - Open Grants or Fellowships Page",
       "url": "https://...",
-      "notes": "Brief note on what grants/fellowships they offer for this profile"
+      "notes": "Brief note on what active grants/fellowships they offer for this profile"
     }
   ],
   "queries": [
@@ -935,7 +939,10 @@ Provide 6 to 10 real, well-known foundation/fellowship/grant URLs in `sources` a
         sources = [
             s
             for s in (parsed.get("sources") or [])
-            if isinstance(s, dict) and str(s.get("url", "")).startswith("http") and s.get("name")
+            if isinstance(s, dict)
+            and str(s.get("url", "")).startswith("http")
+            and "wikipedia.org" not in str(s.get("url", "")).lower()
+            and s.get("name")
         ]
         queries = [
             str(q).strip()
@@ -954,36 +961,63 @@ def evaluate_grants_batch(grants: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     settings = get_settings()
     profile_raw = settings.get("ai_profile_json", "").strip()
     goal_prompt = settings.get("ai_user_goal_prompt", "").strip()
-    if not profile_raw and not goal_prompt:
-        for g in grants:
-            g["ai_score"] = 75
-            g["ai_reason"] = "Matched narrowed search query."
-        return grants
+    active_tags = [r["keyword"] for r in list_tagwords(only_enabled=True)]
+    effective_profile = (
+        profile_raw
+        or goal_prompt
+        or (f"Active Grant Search Topics: {', '.join(active_tags)}" if active_tags else "Open Grants, Fellowships, and RFPs")
+    )
 
+    today_str = datetime.now().strftime("%Y-%m-%d")
     auth = get_google_auth_status()
     if not auth["connected"]:
         for g in grants:
-            g["ai_score"] = 75
-            g["ai_reason"] = "Matched narrowed search query."
+            # Without AI connected, only accept candidates that have a verified deadline or come from official open RFP APIs
+            has_deadline = bool((g.get("deadline") or "").strip())
+            is_official_api = any(
+                s in (g.get("source_name") or "")
+                for s in ("Grants.gov API", "Federal Register", "Challenge.gov API", "NIH Guide", "Philanthropy News Digest", "FundsforNGOs")
+            )
+            if has_deadline or is_official_api:
+                g["is_active_rfp"] = True
+                g["ai_score"] = 72
+                g["ai_reason"] = "Verified open grant/RFP listing matching your search criteria."
+            else:
+                g["is_active_rfp"] = False
+                g["ai_score"] = 0
+                g["ai_reason"] = "Skipped unverified web link (connect an AI key for deep relevance evaluation)."
         return grants
 
-    system_prompt = """
-You are an expert Grant Relevance Evaluator.
-Given the user's narrowed Grant Interview Profile and a list of newly discovered candidate grants/RFPs, score each candidate from 0 to 100 based on how well it fits what the user is looking for and whether it appears to be an active/open grant, fellowship, or funding opportunity:
-- 80-100: Strong direct match for their narrowed topic, applicant eligibility level, and funding type.
-- 65-79: Good potential match worth notifying the user about.
-- 0-64: Weak match, wrong applicant eligibility level, closed/expired, or not an actual grant/RFP/fellowship.
+    system_prompt = f"""
+You are a strict Grant & Active RFP Verification Gatekeeper.
+Today's date is {today_str}.
 
-Return strictly valid JSON in this format:
-{
+Given the user's Grant Profile and a list of candidate URLs/snippets, you must verify TWO things for every candidate:
+1. Is it a GENUINE, CURRENTLY ACTIVE/OPEN grant, fellowship, RFP, solicitation, or funding opportunity that an applicant can apply for right now? (`is_active_rfp`: true or false)
+2. How well does it match the user's profile and topic? (`score`: 0 to 100)
+
+MANDATORY REJECTION RULES (MUST set `"is_active_rfp": false` and `"score": 0`):
+- Reject ANY Wikipedia page, encyclopedia entry, dictionary page, textbook, academic journal paper, or general informational/educational article.
+- Reject ANY news article, press release, or blog post announcing PAST grant winners, previous recipients, or already-awarded grants (e.g., "Foundation awards $1M to...", "Meet our 2024 Fellows", "Past Grantees").
+- Reject ANY grant, RFP, or fellowship whose deadline has already passed (before {today_str}) or whose snippet/title indicates applications are closed or archived.
+- Reject ANY generic homepage, "about us" page, donation page, or job/career posting that is not a grant/fellowship/RFP opportunity.
+
+SCORING SCALE (only for genuine, currently open/active RFPs where `is_active_rfp` is true):
+- 80-100: Verified active/open RFP, grant, or fellowship that strongly matches the user's topic and eligibility.
+- 65-79: Verified active/open RFP, grant, or fellowship with a good potential match for the user.
+- 0-64: Weak topic match, wrong applicant eligibility level, closed/expired, or not an actual open RFP.
+
+Return strictly valid JSON in this exact format:
+{{
   "evaluations": [
-    {
+    {{
       "index": 0,
+      "is_active_rfp": true,
       "score": 88,
-      "reason": "1 concise sentence explaining why this grant fits (or doesn't fit) the user's narrowed profile."
-    }
+      "reason": "1 concise sentence explaining why this active RFP/grant fits (or why it was rejected)."
+    }}
   ]
-}
+}}
 """
     chunk_size = 25
     max_to_evaluate = min(len(grants), 50)
@@ -995,6 +1029,7 @@ Return strictly valid JSON in this format:
             {
                 "index": start_idx + idx,
                 "title": g.get("title", ""),
+                "url": g.get("url", ""),
                 "source": g.get("source_name", ""),
                 "funder": g.get("agency_or_funder", ""),
                 "deadline": g.get("deadline", ""),
@@ -1004,8 +1039,9 @@ Return strictly valid JSON in this format:
         ]
 
         user_prompt = (
-            f"User Narrowed Grant Profile:\n{profile_raw or goal_prompt}\n\n"
-            f"Candidate Grants to Evaluate:\n{json.dumps(items_for_prompt, indent=2)}"
+            f"Today's Date: {today_str}\n\n"
+            f"User Grant Profile:\n{effective_profile}\n\n"
+            f"Candidate Grants to Verify & Score:\n{json.dumps(items_for_prompt, indent=2)}"
         )
 
         ok, raw = call_gemini(system_prompt, user_prompt, response_json=True, temperature=0.1)
@@ -1018,7 +1054,12 @@ Return strictly valid JSON in this format:
                 if "index" in item:
                     idx = int(item["index"])
                     if 0 <= idx < len(grants):
-                        grants[idx]["ai_score"] = int(item.get("score", 70))
+                        is_active = bool(item.get("is_active_rfp", True))
+                        raw_score = int(item.get("score", 0))
+                        if not is_active:
+                            raw_score = 0
+                        grants[idx]["is_active_rfp"] = is_active and raw_score >= 60
+                        grants[idx]["ai_score"] = raw_score
                         grants[idx]["ai_reason"] = str(item.get("reason", ""))[:300]
                         evaluated_indices.add(idx)
         except Exception:
@@ -1026,8 +1067,20 @@ Return strictly valid JSON in this format:
 
     for idx, g in enumerate(grants):
         if idx not in evaluated_indices:
-            g["ai_score"] = 68
-            g["ai_reason"] = "Matched narrowed search query."
+            # Never auto-approve unevaluated items unless they came from an official open API with a verified deadline
+            has_deadline = bool((g.get("deadline") or "").strip())
+            is_official_api = any(
+                s in (g.get("source_name") or "")
+                for s in ("Grants.gov API", "Federal Register", "Challenge.gov API")
+            )
+            if has_deadline and is_official_api:
+                g["is_active_rfp"] = True
+                g["ai_score"] = 68
+                g["ai_reason"] = "Active federal grant listing with upcoming deadline."
+            else:
+                g["is_active_rfp"] = False
+                g["ai_score"] = 0
+                g["ai_reason"] = "Not verified as an active RFP."
 
     return grants
 
