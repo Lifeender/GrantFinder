@@ -92,6 +92,44 @@
       color: #6ee7b7;
       border-color: rgba(16, 185, 129, 0.4);
     }
+    .provider-tabs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .provider-tab {
+      background: #070b14;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 9px 10px;
+      border-radius: 9px;
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.15s;
+    }
+    .provider-tab:hover {
+      border-color: var(--accent);
+      color: var(--text);
+    }
+    .provider-tab.active {
+      background: rgba(59, 130, 246, 0.18);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .provider-tab .prov-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #475569;
+      margin-right: 5px;
+    }
+    .provider-tab.is-connected .prov-dot {
+      background: var(--emerald);
+    }
     .btn {
       background: var(--accent);
       color: #fff;
@@ -437,8 +475,8 @@
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <span id="phaseBadge" class="phase-badge phase-interview">Phase 1: AI Interview Mode</span>
       <button id="googleAuthBtn" class="google-btn" onclick="openGoogleModal()">
-        <svg width="16" height="16" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
-        <span id="googleAuthLabel">Connect Google / Gemini Key</span>
+        <span style="font-size:15px;">🔑</span>
+        <span id="googleAuthLabel">Connect AI Key (Gemini / ChatGPT / Claude)</span>
       </button>
       <button id="shutdownServerBtn" class="btn btn-danger" style="padding:7px 12px;font-size:12.5px;display:none;" onclick="shutdownServer()" title="Stop the local Python server process">
         ⏻ Shut Off Server
@@ -478,21 +516,31 @@
             <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px;" onclick="resetInterview()">Start Over</button>
           </div>
           <p style="font-size:13px;color:var(--muted);margin-top:0;">
-            Answer a few quick questions from Gemini so it can narrow down your exact search queries before activating the grant web crawler.
+            Answer a few quick questions from your AI assistant (Gemini, ChatGPT, or Claude) so it can narrow down your exact search queries before activating the grant web crawler.
           </p>
 
-          <!-- Shown only when Google isn't connected yet -->
+          <!-- Shown only when no AI provider key is connected yet -->
           <div id="inlineAuthBanner" style="display:none;background:#070b14;border:1px solid #3b82f6;border-radius:10px;padding:16px;margin-bottom:14px;">
             <div style="font-weight:700;font-size:14px;margin-bottom:6px;color:#93c5fd;">
-              Connect Google Gemini to Start Your AI Interview
+              Connect Your Preferred AI API Key (Gemini, ChatGPT, or Claude)
             </div>
-            <p style="font-size:12.5px;color:var(--muted);margin-top:0;">
-              Step 1: Click <strong>"Open Google Key Page"</strong> (or paste an existing Gemini API key).<br>
-              Step 2: Paste your key below and click <strong>"Verify &amp; Save API Key"</strong>.
+            <p style="font-size:12.5px;color:var(--muted);margin-top:0;margin-bottom:10px;">
+              Choose your preferred AI provider below (or just paste any API key — we auto-detect <code>AIza...</code>, <code>sk-...</code>, and <code>sk-ant-...</code>):
             </p>
+            <div class="provider-tabs">
+              <button type="button" class="provider-tab active" data-prov="gemini" onclick="selectProvider('gemini')">
+                <span class="prov-dot"></span>Google Gemini
+              </button>
+              <button type="button" class="provider-tab" data-prov="openai" onclick="selectProvider('openai')">
+                <span class="prov-dot"></span>OpenAI (ChatGPT)
+              </button>
+              <button type="button" class="provider-tab" data-prov="claude" onclick="selectProvider('claude')">
+                <span class="prov-dot"></span>Anthropic (Claude)
+              </button>
+            </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
-              <button class="google-btn" onclick="openGoogleStudioPopup()">1. Open Google Key Page &rarr;</button>
-              <input type="password" id="inlineGeminiKey" placeholder="2. Paste Gemini API key (AIza...)" style="flex:1;min-width:210px;" onkeydown="if(event.key==='Enter') verifyGeminiKeyFrom('inlineGeminiKey', 'inlineVerifyStatus')" />
+              <button id="inlineKeyPageBtn" class="google-btn" onclick="openProviderKeyPopup()">1. Open Gemini Key Page &rarr;</button>
+              <input type="password" id="inlineGeminiKey" placeholder="2. Paste Gemini API key (AIza...)" style="flex:1;min-width:210px;" oninput="autoDetectProviderFromInput(this.value)" onkeydown="if(event.key==='Enter') verifyGeminiKeyFrom('inlineGeminiKey', 'inlineVerifyStatus')" />
               <button id="inlineVerifyBtn" class="btn" onclick="verifyGeminiKeyFrom('inlineGeminiKey', 'inlineVerifyStatus')">Verify &amp; Save API Key</button>
             </div>
             <div id="inlineVerifyStatus" style="font-size:13px;margin-top:6px;display:none;padding:8px 12px;border-radius:6px;"></div>
@@ -516,7 +564,7 @@
           <div>
             <h2 style="margin-top:0;font-size:18px;">Live Search Query Funnel</h2>
             <p style="font-size:13px;color:var(--muted);margin-top:0;">
-              As you answer Gemini's questions, watch your search queries narrow down here. You can also add or remove any query before launching the crawler.
+              As you answer the AI's questions, watch your search queries narrow down here. You can also add or remove any query before launching the crawler.
             </p>
 
             <div id="funnelSummaryBox" style="background:#070b14;border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px;">
@@ -705,25 +753,54 @@
     </div>
   </div>
 
-  <!-- GOOGLE SIGN-IN MODAL -->
+  <!-- AI PROVIDER & API KEY MODAL (GEMINI / CHATGPT / CLAUDE) -->
   <div id="googleModal" class="modal-backdrop" onclick="if(event.target===this) closeGoogleModal()">
     <div class="modal">
-      <h3 style="margin-top:0;">Connect &amp; Verify Google Gemini API Key</h3>
-      <p style="font-size:13px;color:var(--muted);">
-        1. Click <strong>"Open Google Key Page"</strong> to grab your key with your Google account.<br>
-        2. Paste the key below and click <strong>"Verify &amp; Save API Key"</strong> to test and save it.
+      <h3 style="margin-top:0;margin-bottom:6px;">Connect Your Preferred AI API Key</h3>
+      <p style="font-size:13px;color:var(--muted);margin-top:0;margin-bottom:12px;">
+        Select <strong>Google Gemini</strong>, <strong>OpenAI (ChatGPT)</strong>, or <strong>Anthropic (Claude)</strong> — or simply paste any API key and it will be auto-detected.
       </p>
-      <button class="google-btn" style="width:100%;justify-content:center;margin-bottom:12px;" onclick="openGoogleStudioPopup()">
-        1. Open Google Key Page (aistudio.google.com) &rarr;
-      </button>
-      <div class="form-group" style="margin-bottom:10px;">
-        <input type="password" id="quickGeminiKey" placeholder="2. Paste Gemini API key here (AIza...)" onkeydown="if(event.key==='Enter') verifyGeminiKeyFrom('quickGeminiKey', 'modalVerifyStatus')" />
+
+      <div class="provider-tabs">
+        <button type="button" class="provider-tab active" data-prov="gemini" onclick="selectProvider('gemini')">
+          <span class="prov-dot"></span>Google Gemini
+        </button>
+        <button type="button" class="provider-tab" data-prov="openai" onclick="selectProvider('openai')">
+          <span class="prov-dot"></span>OpenAI (ChatGPT)
+        </button>
+        <button type="button" class="provider-tab" data-prov="claude" onclick="selectProvider('claude')">
+          <span class="prov-dot"></span>Anthropic (Claude)
+        </button>
       </div>
+
+      <div id="modalAlreadyConnectedBox" style="display:none;background:rgba(16,185,129,0.12);border:1px solid rgba(16,185,129,0.4);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:#a7f3d0;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span id="modalAlreadyConnectedText">Connected</span>
+          <button id="modalUseProviderBtn" type="button" class="btn" style="padding:5px 11px;font-size:12px;" onclick="switchActiveProvider()">
+            Use This Provider
+          </button>
+        </div>
+      </div>
+
+      <button id="modalKeyPageBtn" class="google-btn" style="width:100%;justify-content:center;margin-bottom:12px;" onclick="openProviderKeyPopup()">
+        1. Open Google Gemini Key Page (aistudio.google.com) &rarr;
+      </button>
+
+      <div class="form-group" style="margin-bottom:10px;">
+        <label id="modalKeyInputLabel">API Key</label>
+        <input type="password" id="quickGeminiKey" placeholder="2. Paste Gemini API key here (AIza...)" oninput="autoDetectProviderFromInput(this.value)" onkeydown="if(event.key==='Enter') verifyGeminiKeyFrom('quickGeminiKey', 'modalVerifyStatus')" />
+      </div>
+
+      <div class="form-group" style="margin-bottom:12px;">
+        <label>Preferred Model (Optional — auto-selects best available if default)</label>
+        <select id="modalModelSelect"></select>
+      </div>
+
       <button id="modalVerifyBtn" class="btn" style="width:100%;margin-bottom:10px;" onclick="verifyGeminiKeyFrom('quickGeminiKey', 'modalVerifyStatus')">
         ✓ Verify &amp; Save API Key
       </button>
       <div id="modalVerifyStatus" style="font-size:13px;margin-bottom:12px;display:none;padding:10px 12px;border-radius:8px;"></div>
-      <div style="display:flex;justify-content:space-between;margin-top:14px;">
+      <div style="display:flex;justify-content:space-between;margin-top:14px;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-danger" onclick="disconnectGoogle()">Disconnect Key</button>
         <button class="btn btn-secondary" onclick="closeGoogleModal()">Close</button>
       </div>
@@ -734,6 +811,51 @@
 
   <script>
     let currentNarrowedQueries = [];
+    let selectedProvider = 'gemini';
+    let latestAuthState = null;
+
+    const PROVIDER_CONFIG = {
+      gemini: {
+        label: 'Google Gemini',
+        shortLabel: 'Gemini',
+        keyUrl: 'https://aistudio.google.com/app/apikey',
+        keyDomain: 'aistudio.google.com',
+        placeholder: '2. Paste Gemini API key (AIza...)',
+        models: [
+          { value: 'gemini-3.5-flash-lite', label: 'gemini-3.5-flash-lite (Fastest Default)' },
+          { value: 'gemini-2.5-flash', label: 'gemini-2.5-flash' },
+          { value: 'gemini-2.0-flash', label: 'gemini-2.0-flash' },
+          { value: 'gemini-3.1-flash-lite', label: 'gemini-3.1-flash-lite' }
+        ]
+      },
+      openai: {
+        label: 'OpenAI (ChatGPT)',
+        shortLabel: 'ChatGPT',
+        keyUrl: 'https://platform.openai.com/api-keys',
+        keyDomain: 'platform.openai.com',
+        placeholder: '2. Paste OpenAI / ChatGPT API key (sk-...)',
+        models: [
+          { value: 'gpt-4o-mini', label: 'gpt-4o-mini (Fast & Affordable Default)' },
+          { value: 'gpt-4.1-mini', label: 'gpt-4.1-mini' },
+          { value: 'gpt-4o', label: 'gpt-4o (Flagship)' },
+          { value: 'gpt-3.5-turbo', label: 'gpt-3.5-turbo' }
+        ]
+      },
+      claude: {
+        label: 'Anthropic (Claude)',
+        shortLabel: 'Claude',
+        keyUrl: 'https://console.anthropic.com/settings/keys',
+        keyDomain: 'console.anthropic.com',
+        placeholder: '2. Paste Anthropic Claude API key (sk-ant-...)',
+        models: [
+          { value: 'claude-3-5-haiku-latest', label: 'claude-3-5-haiku-latest (Fast Default)' },
+          { value: 'claude-sonnet-4-20250514', label: 'claude-sonnet-4-20250514 (Claude 4 Sonnet)' },
+          { value: 'claude-3-7-sonnet-latest', label: 'claude-3-7-sonnet-latest (Claude 3.7 Sonnet)' },
+          { value: 'claude-3-5-sonnet-latest', label: 'claude-3-5-sonnet-latest (Claude 3.5 Sonnet)' },
+          { value: 'claude-3-haiku-20240307', label: 'claude-3-haiku-20240307' }
+        ]
+      }
+    };
 
     function showToast(msg) {
       const t = document.getElementById('toast');
@@ -742,18 +864,118 @@
       setTimeout(() => { t.style.display = 'none'; }, 3800);
     }
 
-    function openGoogleModal() { document.getElementById('googleModal').style.display = 'flex'; }
+    function selectProvider(prov, skipClearStatus) {
+      if (!PROVIDER_CONFIG[prov]) prov = 'gemini';
+      selectedProvider = prov;
+      const cfg = PROVIDER_CONFIG[prov];
+
+      document.querySelectorAll('.provider-tab').forEach(btn => {
+        const bProv = btn.getAttribute('data-prov');
+        btn.classList.toggle('active', bProv === prov);
+        const isConn = latestAuthState && latestAuthState.providers && latestAuthState.providers[bProv] && latestAuthState.providers[bProv].connected;
+        btn.classList.toggle('is-connected', Boolean(isConn));
+      });
+
+      const inlineBtn = document.getElementById('inlineKeyPageBtn');
+      if (inlineBtn) inlineBtn.innerHTML = `1. Open ${cfg.shortLabel} Key Page &rarr;`;
+
+      const inlineInput = document.getElementById('inlineGeminiKey');
+      if (inlineInput) inlineInput.placeholder = cfg.placeholder;
+
+      const modalKeyBtn = document.getElementById('modalKeyPageBtn');
+      if (modalKeyBtn) modalKeyBtn.innerHTML = `1. Open ${cfg.label} Key Page (${cfg.keyDomain}) &rarr;`;
+
+      const modalInput = document.getElementById('quickGeminiKey');
+      if (modalInput) modalInput.placeholder = cfg.placeholder;
+
+      const modalLabel = document.getElementById('modalKeyInputLabel');
+      if (modalLabel) modalLabel.textContent = `${cfg.label} API Key`;
+
+      const modelSelect = document.getElementById('modalModelSelect');
+      if (modelSelect) {
+        const savedModel = (latestAuthState && latestAuthState.providers && latestAuthState.providers[prov] && latestAuthState.providers[prov].model) || cfg.models[0].value;
+        modelSelect.innerHTML = cfg.models.map(m =>
+          `<option value="${m.value}" ${m.value === savedModel ? 'selected' : ''}>${m.label}</option>`
+        ).join('');
+      }
+
+      // Show if this provider is already connected
+      const connBox = document.getElementById('modalAlreadyConnectedBox');
+      const connTxt = document.getElementById('modalAlreadyConnectedText');
+      const useBtn = document.getElementById('modalUseProviderBtn');
+      if (connBox && latestAuthState && latestAuthState.providers && latestAuthState.providers[prov]) {
+        const pInfo = latestAuthState.providers[prov];
+        if (pInfo.connected) {
+          connBox.style.display = 'block';
+          const isCurrentActive = latestAuthState.provider === prov;
+          connTxt.textContent = isCurrentActive
+            ? `✓ Active Provider (${pInfo.model})`
+            : `✓ Key saved (${pInfo.model})`;
+          if (useBtn) {
+            useBtn.style.display = isCurrentActive ? 'none' : 'inline-block';
+          }
+        } else {
+          connBox.style.display = 'none';
+        }
+      }
+
+      if (!skipClearStatus) {
+        const ms = document.getElementById('modalVerifyStatus');
+        if (ms) ms.style.display = 'none';
+      }
+    }
+
+    function autoDetectProviderFromInput(rawVal) {
+      const v = (rawVal || '').trim();
+      if (v.startsWith('sk-ant-')) {
+        selectProvider('claude', true);
+      } else if (v.startsWith('AIza')) {
+        selectProvider('gemini', true);
+      } else if (v.startsWith('sk-')) {
+        selectProvider('openai', true);
+      }
+    }
+
+    async function switchActiveProvider() {
+      const modelSelect = document.getElementById('modalModelSelect');
+      const chosenModel = modelSelect ? modelSelect.value : undefined;
+      const res = await fetch('/api/auth/quick-connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: selectedProvider, model: chosenModel })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        showToast(data.message || 'Switched active AI provider!');
+        closeGoogleModal();
+        loadAppState();
+      }
+    }
+
+    function openGoogleModal() {
+      if (latestAuthState && latestAuthState.provider) {
+        selectProvider(latestAuthState.provider, true);
+      } else {
+        selectProvider(selectedProvider, true);
+      }
+      document.getElementById('googleModal').style.display = 'flex';
+    }
     function closeGoogleModal() { document.getElementById('googleModal').style.display = 'none'; }
 
-    function openGoogleStudioPopup() {
-      const w = 560, h = 680;
+    function openProviderKeyPopup() {
+      const cfg = PROVIDER_CONFIG[selectedProvider] || PROVIDER_CONFIG.gemini;
+      const w = 620, h = 700;
       const left = (window.screen.width - w) / 2;
       const top = (window.screen.height - h) / 2;
       window.open(
-        'https://aistudio.google.com/app/apikey',
-        'GoogleSignInPopup',
+        cfg.keyUrl,
+        'AIKeyPopup',
         `width=${w},height=${h},top=${top},left=${left},resizable=yes,scrollbars=yes`
       );
+    }
+
+    function openGoogleStudioPopup() {
+      openProviderKeyPopup();
     }
 
     async function verifyGeminiKeyFrom(inputId, statusId) {
@@ -761,25 +983,34 @@
       const statusEl = document.getElementById(statusId);
       const rawKey = (inputEl ? inputEl.value : '').trim();
 
+      autoDetectProviderFromInput(rawKey);
+      const cfg = PROVIDER_CONFIG[selectedProvider] || PROVIDER_CONFIG.gemini;
+      const modelSelect = document.getElementById('modalModelSelect');
+      const preferredModel = (inputId === 'quickGeminiKey' && modelSelect) ? modelSelect.value : undefined;
+
       statusEl.style.display = 'block';
       if (!rawKey) {
         statusEl.style.background = 'rgba(239, 68, 68, 0.18)';
         statusEl.style.border = '1px solid rgba(239, 68, 68, 0.4)';
         statusEl.style.color = '#fca5a5';
-        statusEl.textContent = '❌ Please paste your Gemini API key into the box first.';
+        statusEl.textContent = `❌ Please paste your ${cfg.label} API key into the box first.`;
         return;
       }
 
       statusEl.style.background = 'rgba(59, 130, 246, 0.15)';
       statusEl.style.border = '1px solid rgba(59, 130, 246, 0.4)';
       statusEl.style.color = '#93c5fd';
-      statusEl.textContent = '⏳ Verifying API key with Google Gemini servers...';
+      statusEl.textContent = `⏳ Verifying API key with ${cfg.label}...`;
 
       try {
         const res = await fetch('/api/auth/quick-connect', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ gemini_api_key: rawKey })
+          body: JSON.stringify({
+            provider: selectedProvider,
+            api_key: rawKey,
+            model: preferredModel
+          })
         });
         const data = await res.json();
 
@@ -822,9 +1053,14 @@
     }
 
     async function disconnectGoogle() {
-      await fetch('/api/auth/logout', { method: 'POST' });
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: selectedProvider })
+      });
       closeGoogleModal();
       loadAppState();
+      showToast('Disconnected API key.');
     }
 
     function updateFunnelStepper(stage) {
@@ -839,7 +1075,7 @@
     function renderNarrowedQueries() {
       const container = document.getElementById('narrowedQueriesList');
       if (!currentNarrowedQueries.length) {
-        container.innerHTML = `<span style="font-size:13px;color:var(--muted);">No narrowed queries yet — answer Gemini's question on the left.</span>`;
+        container.innerHTML = `<span style="font-size:13px;color:var(--muted);">No narrowed queries yet — answer the AI's question on the left.</span>`;
         return;
       }
       container.innerHTML = currentNarrowedQueries.map((q, idx) => `
@@ -869,20 +1105,24 @@
     async function loadAppState() {
       const res = await fetch('/api/concierge/state');
       const data = await res.json();
+      latestAuthState = data.auth || {};
 
-      // Update Google button
+      // Update AI Provider header button & inline banner
       const gBtn = document.getElementById('googleAuthBtn');
       const gLbl = document.getElementById('googleAuthLabel');
       const inlineBanner = document.getElementById('inlineAuthBanner');
-      if (data.auth.connected) {
+      if (data.auth && data.auth.connected) {
         gBtn.classList.add('connected');
-        gLbl.textContent = 'Google Connected ✓';
+        const pLabel = data.auth.provider_label || 'AI';
+        const pModel = data.auth.model ? ` (${data.auth.model})` : '';
+        gLbl.textContent = `${pLabel}${pModel} ✓`;
         inlineBanner.style.display = 'none';
       } else {
         gBtn.classList.remove('connected');
-        gLbl.textContent = 'Sign in with Google';
+        gLbl.textContent = 'Connect AI Key (Gemini / ChatGPT / Claude)';
         inlineBanner.style.display = 'block';
       }
+      selectProvider((data.auth && data.auth.provider) || selectedProvider, true);
 
       // Notification target preview
       const targets = [];
@@ -996,7 +1236,7 @@
       const auth = await authRes.json();
       if (!auth.connected) {
         openGoogleModal();
-        showToast('Please connect your Google account first!');
+        showToast('Please connect your preferred AI API key (Gemini, ChatGPT, or Claude) first!');
         return;
       }
 
@@ -1020,7 +1260,7 @@
       if (res.ok) {
         await loadAppState();
       } else {
-        let errDetail = 'Error communicating with Gemini';
+        let errDetail = 'Error communicating with AI provider';
         try {
           const err = await res.json();
           errDetail = err.detail || err.message || errDetail;
@@ -1141,7 +1381,7 @@
                 ${g.agency_or_funder ? ` &bull; Funder: <strong>${g.agency_or_funder}</strong>` : ''}
                 &bull; Found: ${g.discovered_at.split('T')[0]}
               </div>
-              ${g.ai_reason ? `<div class="grant-ai-box"><strong>Gemini Match Analysis:</strong> ${g.ai_reason}</div>` : ''}
+              ${g.ai_reason ? `<div class="grant-ai-box"><strong>AI Match Analysis:</strong> ${g.ai_reason}</div>` : ''}
               ${g.snippet ? `<div class="grant-snippet">${g.snippet}</div>` : ''}
               <div class="badges">${scoreBadge} ${deadlineBadge} ${tags}</div>
             </div>
@@ -1178,16 +1418,46 @@
       const res = await fetch('/api/sources');
       const data = await res.json();
       const list = document.getElementById('sourcesList');
+      const countEl = document.getElementById('tabSourceCount');
+      if (countEl && data.sources) countEl.textContent = data.sources.length;
       list.innerHTML = data.sources.map(s => `
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;border-bottom:1px solid var(--border);">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;border-bottom:1px solid var(--border);gap:12px;">
           <div>
             <a href="${s.url}" target="_blank" style="color:#60a5fa;font-weight:600;text-decoration:none;">${s.name}</a>
-            <span class="badge badge-tag" style="margin-left:8px;">${s.is_discovered ? 'Auto-Discovered Portal' : 'Core Source'}</span>
+            <span class="badge ${s.is_discovered ? 'badge-score-mid' : 'badge-tag'}" style="margin-left:8px;">
+              ${s.is_discovered ? 'AI / Web Discovered Portal' : ('Core ' + (s.source_type || 'html').toUpperCase())}
+            </span>
+            ${s.notes ? `<div style="font-size:12.5px;color:#cbd5e1;margin-top:2px;">${s.notes}</div>` : ''}
             <div style="font-size:12px;color:var(--muted);">${s.url}</div>
           </div>
           <button class="btn btn-danger" onclick="removeSourceItem(${s.id})">Remove</button>
         </div>
       `).join('');
+    }
+
+    async function discoverMoreSourcesWithAI() {
+      const btn = document.getElementById('aiDiscoverSourcesBtn');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Discovering Foundation & Fellowship Portals...';
+      }
+      try {
+        const res = await fetch('/api/sources/discover', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok && data.ok) {
+          showToast(`Discovered and added ${data.added_count} new specialized grant source(s)!`);
+          loadSources();
+        } else {
+          showToast('Could not discover new sources — check your AI API key.');
+        }
+      } catch (e) {
+        showToast('Error discovering sources: ' + e);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '✨ Ask AI to Discover Specialized Foundation &amp; Fellowship Portals';
+        }
+      }
     }
 
     async function createSource() {

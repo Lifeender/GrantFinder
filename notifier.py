@@ -132,7 +132,7 @@ def send_crawl_notifications(
                     else ""
                 )
                 ai_reason_html = (
-                    f"<div style='font-size:13px;color:#0f766e;background:#f0fdfa;padding:6px 10px;border-radius:6px;margin-bottom:8px;'><strong>Gemini Match Analysis:</strong> {g['ai_reason']}</div>"
+                    f"<div style='font-size:13px;color:#0f766e;background:#f0fdfa;padding:6px 10px;border-radius:6px;margin-bottom:8px;'><strong>AI Match Analysis:</strong> {g['ai_reason']}</div>"
                     if g.get("ai_reason")
                     else ""
                 )
@@ -160,7 +160,7 @@ def send_crawl_notifications(
                 <div style="max-width:680px;margin:0 auto;">
                     <h2 style="color:#1e293b;margin-bottom:4px;">AI Grant Concierge Daily Digest</h2>
                     <p style="color:#475569;margin-top:0;">
-                        Gemini evaluated today's open RFPs and found <strong>{len(sorted_grants)}</strong> high-match grant(s).
+                        AI evaluated today's open RFPs and found <strong>{len(sorted_grants)}</strong> high-match grant(s).
                     </p>
                     {f'<h3>Matching Open Grants &amp; RFPs</h3>{grant_cards_html}' if sorted_grants else ''}
                 </div>

@@ -41,9 +41,69 @@ def _try_load_local_adc_credentials() -> Optional[Dict[str, str]]:
     return None
 
 
+PROVIDER_LABELS = {
+    "gemini": "Google Gemini",
+    "openai": "OpenAI (ChatGPT)",
+    "claude": "Anthropic (Claude)",
+}
+
+OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+
+
+def _get_provider_keys(settings: Dict[str, str]) -> Dict[str, str]:
+    gemini_key = settings.get("gemini_api_key", "").strip() or os.environ.get("GEMINI_API_KEY", "").strip()
+    openai_key = settings.get("openai_api_key", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip()
+    claude_key = (
+        settings.get("claude_api_key", "").strip()
+        or os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        or os.environ.get("CLAUDE_API_KEY", "").strip()
+    )
+    return {
+        "gemini": gemini_key,
+        "openai": openai_key,
+        "claude": claude_key,
+    }
+
+
+def _clean_and_detect_key(raw_key: str, requested_provider: Optional[str] = None) -> Tuple[str, str]:
+    cleaned = (raw_key or "").strip().strip('"').strip("'")
+    if "=" in cleaned:
+        prefix, val = cleaned.split("=", 1)
+        p_up = prefix.strip().upper()
+        if any(k in p_up for k in ("API_KEY", "GEMINI", "OPENAI", "ANTHROPIC", "CLAUDE")):
+            cleaned = val.strip().strip('"').strip("'")
+
+    prov = (requested_provider or "").strip().lower()
+    if prov in ("chatgpt", "gpt"):
+        prov = "openai"
+    elif prov in ("anthropic",):
+        prov = "claude"
+
+    # Auto-detect from well-known API key prefixes if unambiguous
+    if cleaned.startswith("sk-ant-"):
+        detected = "claude"
+    elif cleaned.startswith("AIza"):
+        detected = "gemini"
+    elif cleaned.startswith("sk-"):
+        detected = "openai"
+    else:
+        detected = prov if prov in ("gemini", "openai", "claude") else "gemini"
+
+    # If the user didn't force a different provider, or if the key prefix clearly belongs to another provider
+    if not prov or prov == "auto" or cleaned.startswith(("sk-ant-", "AIza")) or (cleaned.startswith("sk-") and prov == "gemini"):
+        prov = detected
+
+    return cleaned, prov
+
+
 def get_google_auth_status() -> Dict[str, Any]:
     settings = get_settings()
-    api_key = settings.get("gemini_api_key", "").strip() or os.environ.get("GEMINI_API_KEY", "").strip()
+    keys = _get_provider_keys(settings)
+    gemini_key = keys["gemini"]
+    openai_key = keys["openai"]
+    claude_key = keys["claude"]
+
     refresh_token = settings.get("google_oauth_refresh_token", "").strip()
     access_token = settings.get("google_oauth_access_token", "").strip()
     user_email = settings.get("google_user_email", "").strip()
@@ -51,11 +111,12 @@ def get_google_auth_status() -> Dict[str, Any]:
     user_picture = settings.get("google_user_picture", "").strip()
     client_id = settings.get("google_oauth_client_id", "").strip() or os.environ.get("GOOGLE_CLIENT_ID", "").strip()
 
-    if not refresh_token and not api_key:
+    if not refresh_token and not gemini_key and not openai_key and not claude_key:
         adc = _try_load_local_adc_credentials()
         if adc:
             update_settings(
                 {
+                    "ai_provider": "gemini",
                     "google_auth_mode": "oauth",
                     "google_oauth_client_id": adc["client_id"],
                     "google_oauth_client_secret": adc["client_secret"],
@@ -66,17 +127,71 @@ def get_google_auth_status() -> Dict[str, Any]:
             refresh_token = adc["refresh_token"]
             user_name = "Google Local Account (ADC)"
 
-    connected = bool(refresh_token or access_token or api_key)
-    mode = "oauth" if (refresh_token or access_token) else ("api_key" if api_key else "none")
+    gemini_connected = bool(refresh_token or access_token or gemini_key)
+    openai_connected = bool(openai_key)
+    claude_connected = bool(claude_key)
+
+    active_provider = settings.get("ai_provider", "gemini").strip().lower()
+    if active_provider not in ("gemini", "openai", "claude"):
+        active_provider = "gemini"
+
+    # If the currently selected provider isn't connected, fall back to one that is connected
+    provider_conn_map = {
+        "gemini": gemini_connected,
+        "openai": openai_connected,
+        "claude": claude_connected,
+    }
+    if not provider_conn_map.get(active_provider):
+        for candidate_prov in ("gemini", "openai", "claude"):
+            if provider_conn_map[candidate_prov]:
+                active_provider = candidate_prov
+                break
+
+    connected = bool(provider_conn_map.get(active_provider))
+    gemini_model = settings.get("gemini_model", "gemini-3.5-flash-lite")
+    openai_model = settings.get("openai_model", "gpt-4o-mini")
+    claude_model = settings.get("claude_model", "claude-3-5-haiku-latest")
+
+    model_map = {
+        "gemini": gemini_model,
+        "openai": openai_model,
+        "claude": claude_model,
+    }
+    active_model = model_map.get(active_provider, gemini_model)
+    provider_label = PROVIDER_LABELS.get(active_provider, "AI Provider")
+
+    if active_provider == "gemini":
+        mode = "oauth" if (refresh_token or access_token) else ("api_key" if gemini_key else "none")
+    else:
+        mode = "api_key" if connected else "none"
 
     return {
         "connected": connected,
+        "provider": active_provider,
+        "provider_label": provider_label,
         "mode": mode,
-        "user_email": user_email or ("Connected via Google Account" if api_key else ""),
-        "user_name": user_name or ("Google Account Connected" if connected else ""),
+        "user_email": user_email or (f"Connected via {provider_label}" if connected else ""),
+        "user_name": user_name or (f"{provider_label} ({active_model})" if connected else ""),
         "user_picture": user_picture,
         "has_oauth_client": bool(client_id),
-        "model": settings.get("gemini_model", "gemini-3.8-flash"),
+        "model": active_model,
+        "providers": {
+            "gemini": {
+                "connected": gemini_connected,
+                "model": gemini_model,
+                "label": PROVIDER_LABELS["gemini"],
+            },
+            "openai": {
+                "connected": openai_connected,
+                "model": openai_model,
+                "label": PROVIDER_LABELS["openai"],
+            },
+            "claude": {
+                "connected": claude_connected,
+                "model": claude_model,
+                "label": PROVIDER_LABELS["claude"],
+            },
+        },
     }
 
 
@@ -146,6 +261,7 @@ def exchange_oauth_code(code: str, redirect_uri: str) -> Tuple[bool, str]:
 
         update_settings(
             {
+                "ai_provider": "gemini",
                 "google_auth_mode": "oauth",
                 "google_oauth_access_token": access_token,
                 "google_oauth_refresh_token": refresh_token,
@@ -206,26 +322,28 @@ def _get_valid_oauth_access_token(settings: Dict[str, str]) -> Optional[str]:
     return None
 
 
-def verify_and_save_gemini_key(raw_key: str) -> Tuple[bool, str, str]:
+def verify_and_save_gemini_key(raw_key: str, preferred_model: Optional[str] = None) -> Tuple[bool, str, str]:
     """
-    Explicitly verifies a Gemini API key using the official google-genai SDK
-    and the Interactions API with gemini-3.5-flash-lite (ultra-low latency).
+    Verifies a Gemini API key using the official google-genai SDK (Interactions API or generate_content).
     Returns (ok, status_message, detected_model).
     """
     from google import genai
 
-    cleaned = (raw_key or "").strip().strip('"').strip("'")
-    if "=" in cleaned and cleaned.upper().startswith("GEMINI_API_KEY"):
-        cleaned = cleaned.split("=", 1)[1].strip().strip('"').strip("'")
-
+    cleaned, _ = _clean_and_detect_key(raw_key, "gemini")
     if not cleaned:
         return False, "API key is empty. Please paste your Gemini API key first.", ""
 
-    preferred_models = [
-        ("gemini-3.5-flash-lite", "minimal"),
-        ("gemini-3.1-flash-lite", "low"),
-        ("gemini-3.8-flash", "low"),
-    ]
+    preferred_models = []
+    if preferred_model and preferred_model.strip():
+        preferred_models.append((preferred_model.strip(), "low"))
+    preferred_models.extend(
+        [
+            ("gemini-3.5-flash-lite", "minimal"),
+            ("gemini-3.1-flash-lite", "low"),
+            ("gemini-3.8-flash", "low"),
+        ]
+    )
+
     client = genai.Client(api_key=cleaned)
     last_error = ""
 
@@ -239,11 +357,12 @@ def verify_and_save_gemini_key(raw_key: str) -> Tuple[bool, str, str]:
             if interaction and interaction.output_text:
                 update_settings(
                     {
+                        "ai_provider": "gemini",
                         "gemini_api_key": cleaned,
                         "gemini_model": candidate_model,
                         "google_auth_mode": "api_key",
-                        "google_user_name": f"Verified ({candidate_model})",
-                        "google_user_email": f"Verified ({candidate_model})",
+                        "google_user_name": f"Google Gemini ({candidate_model})",
+                        "google_user_email": f"Google Gemini ({candidate_model})",
                     }
                 )
                 return (
@@ -255,30 +374,222 @@ def verify_and_save_gemini_key(raw_key: str) -> Tuple[bool, str, str]:
             last_error = str(exc)
             continue
 
-    return False, f"Verification failed: {last_error[:280]}", ""
+    # Fallback check with standard generate_content models
+    for fallback_model in ("gemini-2.5-flash", "gemini-2.0-flash"):
+        try:
+            resp = client.models.generate_content(
+                model=fallback_model,
+                contents="Reply with the single word READY",
+            )
+            if resp and getattr(resp, "text", None):
+                update_settings(
+                    {
+                        "ai_provider": "gemini",
+                        "gemini_api_key": cleaned,
+                        "gemini_model": fallback_model,
+                        "google_auth_mode": "api_key",
+                        "google_user_name": f"Google Gemini ({fallback_model})",
+                        "google_user_email": f"Google Gemini ({fallback_model})",
+                    }
+                )
+                return (
+                    True,
+                    f"Verified! Connected to Google Gemini using '{fallback_model}'.",
+                    fallback_model,
+                )
+        except Exception as exc:
+            last_error = str(exc)
+            continue
+
+    return False, f"Gemini verification failed: {last_error[:280]}", ""
 
 
-def call_gemini(
+def verify_and_save_openai_key(raw_key: str, preferred_model: Optional[str] = None) -> Tuple[bool, str, str]:
+    """
+    Verifies an OpenAI (ChatGPT) API key against the Chat Completions endpoint.
+    Returns (ok, status_message, detected_model).
+    """
+    cleaned, _ = _clean_and_detect_key(raw_key, "openai")
+    if not cleaned:
+        return False, "API key is empty. Please paste your OpenAI API key first.", ""
+
+    candidates = []
+    if preferred_model and preferred_model.strip():
+        candidates.append(preferred_model.strip())
+    for m in ("gpt-4o-mini", "gpt-4.1-mini", "gpt-4o", "gpt-3.5-turbo"):
+        if m not in candidates:
+            candidates.append(m)
+
+    last_error = ""
+    for candidate_model in candidates:
+        try:
+            resp = requests.post(
+                OPENAI_API_URL,
+                headers={
+                    "Authorization": f"Bearer {cleaned}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": candidate_model,
+                    "messages": [{"role": "user", "content": "Reply with the single word READY"}],
+                    "max_tokens": 10,
+                },
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                update_settings(
+                    {
+                        "ai_provider": "openai",
+                        "openai_api_key": cleaned,
+                        "openai_model": candidate_model,
+                        "google_user_name": f"OpenAI ({candidate_model})",
+                        "google_user_email": f"OpenAI ({candidate_model})",
+                    }
+                )
+                return (
+                    True,
+                    f"Verified! Connected to OpenAI (ChatGPT) using '{candidate_model}'.",
+                    candidate_model,
+                )
+            else:
+                try:
+                    err_json = resp.json()
+                    last_error = err_json.get("error", {}).get("message") or resp.text
+                except Exception:
+                    last_error = resp.text
+                if resp.status_code == 401:
+                    break
+        except Exception as exc:
+            last_error = str(exc)
+            continue
+
+    return False, f"OpenAI verification failed: {last_error[:280]}", ""
+
+
+def verify_and_save_claude_key(raw_key: str, preferred_model: Optional[str] = None) -> Tuple[bool, str, str]:
+    """
+    Verifies an Anthropic (Claude) API key against the Messages endpoint.
+    Returns (ok, status_message, detected_model).
+    """
+    cleaned, _ = _clean_and_detect_key(raw_key, "claude")
+    if not cleaned:
+        return False, "API key is empty. Please paste your Anthropic Claude API key first.", ""
+
+    candidates = []
+    if preferred_model and preferred_model.strip():
+        candidates.append(preferred_model.strip())
+    for m in (
+        "claude-sonnet-4-20250514",
+        "claude-3-7-sonnet-latest",
+        "claude-3-5-haiku-latest",
+        "claude-3-5-sonnet-latest",
+        "claude-3-haiku-20240307",
+    ):
+        if m not in candidates:
+            candidates.append(m)
+
+    last_error = ""
+    for candidate_model in candidates:
+        try:
+            resp = requests.post(
+                ANTHROPIC_API_URL,
+                headers={
+                    "x-api-key": cleaned,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": candidate_model,
+                    "max_tokens": 12,
+                    "messages": [{"role": "user", "content": "Reply with the single word READY"}],
+                },
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                update_settings(
+                    {
+                        "ai_provider": "claude",
+                        "claude_api_key": cleaned,
+                        "claude_model": candidate_model,
+                        "google_user_name": f"Anthropic Claude ({candidate_model})",
+                        "google_user_email": f"Anthropic Claude ({candidate_model})",
+                    }
+                )
+                return (
+                    True,
+                    f"Verified! Connected to Anthropic Claude using '{candidate_model}'.",
+                    candidate_model,
+                )
+            else:
+                try:
+                    err_json = resp.json()
+                    last_error = err_json.get("error", {}).get("message") or resp.text
+                except Exception:
+                    last_error = resp.text
+                if resp.status_code == 401:
+                    break
+        except Exception as exc:
+            last_error = str(exc)
+            continue
+
+    return False, f"Claude verification failed: {last_error[:280]}", ""
+
+
+def verify_and_save_ai_key(
+    raw_key: str,
+    provider: Optional[str] = None,
+    preferred_model: Optional[str] = None,
+) -> Tuple[bool, str, str, str]:
+    """
+    Verifies and saves an API key for Gemini, OpenAI (ChatGPT), or Anthropic (Claude).
+    Auto-detects the provider from the key prefix if appropriate.
+    Returns (ok, status_message, detected_model, resolved_provider).
+    """
+    cleaned, resolved_provider = _clean_and_detect_key(raw_key, provider)
+    if not cleaned:
+        return False, "API key is empty. Please paste your API key first.", "", resolved_provider
+
+    if resolved_provider == "openai":
+        ok, msg, model = verify_and_save_openai_key(cleaned, preferred_model=preferred_model)
+        return ok, msg, model, "openai"
+    if resolved_provider == "claude":
+        ok, msg, model = verify_and_save_claude_key(cleaned, preferred_model=preferred_model)
+        return ok, msg, model, "claude"
+
+    ok, msg, model = verify_and_save_gemini_key(cleaned, preferred_model=preferred_model)
+    return ok, msg, model, "gemini"
+
+
+def _call_gemini_provider(
+    api_key: str,
+    model: str,
     system_instruction: str,
     user_prompt: str,
-    response_json: bool = True,
     temperature: float = 0.2,
 ) -> Tuple[bool, str]:
     from google import genai
 
-    settings = get_settings()
-    model = settings.get("gemini_model", "gemini-3.5-flash-lite").strip() or "gemini-3.5-flash-lite"
-    if model.startswith(("gemini-2.", "gemini-1.")) or model == "gemini-3.8-flash":
-        model = "gemini-3.5-flash-lite"
-
-    api_key = settings.get("gemini_api_key", "").strip() or os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key:
         return False, "Please connect and verify your Gemini API key first."
 
-    t_level = "minimal" if "3.5-flash-lite" in model or "3.6-flash" in model else "low"
+    client = genai.Client(api_key=api_key)
+    if model.startswith(("gemini-2.", "gemini-1.")):
+        try:
+            resp = client.models.generate_content(
+                model=model,
+                contents=f"{system_instruction}\n\n{user_prompt}",
+            )
+            text = (getattr(resp, "text", "") or "").strip()
+            if text:
+                return True, text
+        except Exception as exc:
+            return False, f"Gemini API error: {exc}"
 
+    if model == "gemini-3.8-flash":
+        model = "gemini-3.5-flash-lite"
+
+    t_level = "minimal" if "3.5-flash-lite" in model or "3.6-flash" in model else "low"
     try:
-        client = genai.Client(api_key=api_key)
         kwargs: Dict[str, Any] = {
             "model": model,
             "input": user_prompt,
@@ -288,7 +599,6 @@ def call_gemini(
                 "temperature": temperature,
             },
         }
-
         interaction = client.interactions.create(**kwargs)
         text = (interaction.output_text or "").strip()
         if not text:
@@ -296,6 +606,152 @@ def call_gemini(
         return True, text
     except Exception as exc:
         return False, f"Gemini API error: {exc}"
+
+
+def _call_openai_provider(
+    api_key: str,
+    model: str,
+    system_instruction: str,
+    user_prompt: str,
+    response_json: bool = True,
+    temperature: float = 0.2,
+) -> Tuple[bool, str]:
+    if not api_key:
+        return False, "Please connect and verify your OpenAI (ChatGPT) API key first."
+
+    model = model or "gpt-4o-mini"
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": temperature,
+    }
+    if response_json:
+        payload["response_format"] = {"type": "json_object"}
+
+    try:
+        resp = requests.post(
+            OPENAI_API_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            try:
+                err_msg = resp.json().get("error", {}).get("message") or resp.text
+            except Exception:
+                err_msg = resp.text
+            return False, f"OpenAI API error: {err_msg}"
+
+        data = resp.json()
+        choices = data.get("choices") or []
+        text = (choices[0].get("message", {}).get("content", "") if choices else "").strip()
+        if not text:
+            return False, "OpenAI returned an empty response."
+        return True, text
+    except Exception as exc:
+        return False, f"OpenAI API error: {exc}"
+
+
+def _call_claude_provider(
+    api_key: str,
+    model: str,
+    system_instruction: str,
+    user_prompt: str,
+    temperature: float = 0.2,
+) -> Tuple[bool, str]:
+    if not api_key:
+        return False, "Please connect and verify your Anthropic Claude API key first."
+
+    model = model or "claude-3-5-haiku-latest"
+    payload: Dict[str, Any] = {
+        "model": model,
+        "max_tokens": 2048,
+        "temperature": temperature,
+        "system": system_instruction,
+        "messages": [
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+
+    try:
+        resp = requests.post(
+            ANTHROPIC_API_URL,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json=payload,
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            try:
+                err_msg = resp.json().get("error", {}).get("message") or resp.text
+            except Exception:
+                err_msg = resp.text
+            return False, f"Claude API error: {err_msg}"
+
+        data = resp.json()
+        blocks = data.get("content") or []
+        text_parts = [b.get("text", "") for b in blocks if b.get("type") == "text"]
+        text = "\n".join(text_parts).strip()
+        if not text:
+            return False, "Claude returned an empty response."
+        return True, text
+    except Exception as exc:
+        return False, f"Claude API error: {exc}"
+
+
+def call_gemini(
+    system_instruction: str,
+    user_prompt: str,
+    response_json: bool = True,
+    temperature: float = 0.2,
+) -> Tuple[bool, str]:
+    """
+    Unified AI completion dispatcher. Routes to the user's active preferred provider
+    (Google Gemini, OpenAI ChatGPT, or Anthropic Claude).
+    """
+    settings = get_settings()
+    auth = get_google_auth_status()
+    provider = auth.get("provider", "gemini")
+    keys = _get_provider_keys(settings)
+
+    if provider == "openai":
+        model = settings.get("openai_model", "gpt-4o-mini").strip() or "gpt-4o-mini"
+        return _call_openai_provider(
+            keys["openai"],
+            model,
+            system_instruction,
+            user_prompt,
+            response_json=response_json,
+            temperature=temperature,
+        )
+
+    if provider == "claude":
+        model = settings.get("claude_model", "claude-3-5-haiku-latest").strip() or "claude-3-5-haiku-latest"
+        return _call_claude_provider(
+            keys["claude"],
+            model,
+            system_instruction,
+            user_prompt,
+            temperature=temperature,
+        )
+
+    model = settings.get("gemini_model", "gemini-3.5-flash-lite").strip() or "gemini-3.5-flash-lite"
+    return _call_gemini_provider(
+        keys["gemini"],
+        model,
+        system_instruction,
+        user_prompt,
+        temperature=temperature,
+    )
 
 
 def _parse_json_object(raw: str) -> Dict[str, Any]:
@@ -427,6 +883,70 @@ Respond strictly in valid JSON matching this schema:
     }
 
 
+def discover_sources_and_queries_with_ai(tagwords: List[str]) -> Dict[str, Any]:
+    """
+    Uses the connected AI (Claude, ChatGPT, or Gemini) to suggest real, specialized
+    non-Grants.gov grant portals (private foundations, academic societies, fellowships,
+    state/community foundations, corporate philanthropy) and targeted deep-web search
+    queries tailored to the user's profile.
+    """
+    auth = get_google_auth_status()
+    if not auth.get("connected"):
+        return {"sources": [], "queries": []}
+
+    settings = get_settings()
+    profile_raw = settings.get("ai_profile_json", "").strip()
+    goal_prompt = settings.get("ai_user_goal_prompt", "").strip()
+
+    system_prompt = """
+You are an expert Grant & Fellowship Discovery Researcher.
+Given the user's grant profile and search topics, recommend specific, real, high-value NON-Grants.gov funding sources (such as private foundations, philanthropic funds, research institutes, professional associations, fellowship directories, university/national academies, or corporate grant portals) that actively offer grants, fellowships, or RFPs in this field.
+
+Also generate 6 diverse, high-signal web search queries designed to uncover open RFPs, fellowships, foundation grants, and calls for proposals across the wider web (outside Grants.gov).
+
+Respond strictly in valid JSON matching this schema:
+{
+  "sources": [
+    {
+      "name": "Organization / Foundation Name - Grants or Fellowships Page",
+      "url": "https://...",
+      "notes": "Brief note on what grants/fellowships they offer for this profile"
+    }
+  ],
+  "queries": [
+    "Targeted search query 1",
+    "Targeted search query 2"
+  ]
+}
+Provide 6 to 10 real, well-known foundation/fellowship/grant URLs in `sources` and 6 search strings in `queries`.
+"""
+    user_prompt = (
+        f"User Grant Profile:\n{profile_raw or goal_prompt or 'General Grants & Fellowships'}\n\n"
+        f"Active Search Topics:\n{', '.join(tagwords[:10])}\n\n"
+        f"Produce the JSON response:"
+    )
+
+    ok, raw = call_gemini(system_prompt, user_prompt, response_json=True, temperature=0.3)
+    if not ok:
+        return {"sources": [], "queries": []}
+
+    try:
+        parsed = _parse_json_object(raw)
+        sources = [
+            s
+            for s in (parsed.get("sources") or [])
+            if isinstance(s, dict) and str(s.get("url", "")).startswith("http") and s.get("name")
+        ]
+        queries = [
+            str(q).strip()
+            for q in (parsed.get("queries") or [])
+            if str(q).strip()
+        ]
+        return {"sources": sources[:10], "queries": queries[:8]}
+    except Exception:
+        return {"sources": [], "queries": []}
+
+
 def evaluate_grants_batch(grants: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not grants:
         return []
@@ -449,7 +969,7 @@ def evaluate_grants_batch(grants: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     system_prompt = """
 You are an expert Grant Relevance Evaluator.
-Given the user's narrowed Grant Interview Profile and a list of newly discovered candidate grants/RFPs, score each candidate from 0 to 100 based on how well it fits what the user is looking for and whether it appears to be an active/open grant or fellowship opportunity:
+Given the user's narrowed Grant Interview Profile and a list of newly discovered candidate grants/RFPs, score each candidate from 0 to 100 based on how well it fits what the user is looking for and whether it appears to be an active/open grant, fellowship, or funding opportunity:
 - 80-100: Strong direct match for their narrowed topic, applicant eligibility level, and funding type.
 - 65-79: Good potential match worth notifying the user about.
 - 0-64: Weak match, wrong applicant eligibility level, closed/expired, or not an actual grant/RFP/fellowship.
@@ -465,48 +985,48 @@ Return strictly valid JSON in this format:
   ]
 }
 """
-    batch = grants[:25]
-    items_for_prompt = [
-        {
-            "index": idx,
-            "title": g.get("title", ""),
-            "funder": g.get("agency_or_funder", ""),
-            "deadline": g.get("deadline", ""),
-            "snippet": g.get("snippet", ""),
-        }
-        for idx, g in enumerate(batch)
-    ]
+    chunk_size = 25
+    max_to_evaluate = min(len(grants), 50)
+    evaluated_indices = set()
 
-    user_prompt = (
-        f"User Narrowed Grant Profile:\n{profile_raw or goal_prompt}\n\n"
-        f"Candidate Grants to Evaluate:\n{json.dumps(items_for_prompt, indent=2)}"
-    )
+    for start_idx in range(0, max_to_evaluate, chunk_size):
+        batch = grants[start_idx : start_idx + chunk_size]
+        items_for_prompt = [
+            {
+                "index": start_idx + idx,
+                "title": g.get("title", ""),
+                "source": g.get("source_name", ""),
+                "funder": g.get("agency_or_funder", ""),
+                "deadline": g.get("deadline", ""),
+                "snippet": g.get("snippet", ""),
+            }
+            for idx, g in enumerate(batch)
+        ]
 
-    ok, raw = call_gemini(system_prompt, user_prompt, response_json=True, temperature=0.1)
-    if not ok:
-        for g in grants:
-            g["ai_score"] = 70
-            g["ai_reason"] = "Matched narrowed search query."
-        return grants
+        user_prompt = (
+            f"User Narrowed Grant Profile:\n{profile_raw or goal_prompt}\n\n"
+            f"Candidate Grants to Evaluate:\n{json.dumps(items_for_prompt, indent=2)}"
+        )
 
-    try:
-        cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-        parsed = json.loads(cleaned)
-        eval_map = {
-            int(item["index"]): item
-            for item in (parsed.get("evaluations") or [])
-            if "index" in item
-        }
-        for idx, g in enumerate(grants):
-            if idx in eval_map:
-                g["ai_score"] = int(eval_map[idx].get("score", 70))
-                g["ai_reason"] = str(eval_map[idx].get("reason", ""))[:300]
-            else:
-                g["ai_score"] = 65
-                g["ai_reason"] = "Matched narrowed search query."
-    except Exception:
-        for g in grants:
-            g["ai_score"] = 70
+        ok, raw = call_gemini(system_prompt, user_prompt, response_json=True, temperature=0.1)
+        if not ok:
+            continue
+
+        try:
+            parsed = _parse_json_object(raw)
+            for item in parsed.get("evaluations") or []:
+                if "index" in item:
+                    idx = int(item["index"])
+                    if 0 <= idx < len(grants):
+                        grants[idx]["ai_score"] = int(item.get("score", 70))
+                        grants[idx]["ai_reason"] = str(item.get("reason", ""))[:300]
+                        evaluated_indices.add(idx)
+        except Exception:
+            continue
+
+    for idx, g in enumerate(grants):
+        if idx not in evaluated_indices:
+            g["ai_score"] = 68
             g["ai_reason"] = "Matched narrowed search query."
 
     return grants
@@ -514,7 +1034,7 @@ Return strictly valid JSON in this format:
 
 def generate_daily_sms_summary(matching_grants: List[Dict[str, Any]]) -> str:
     if not matching_grants:
-        return "Daily Grant Crawler: Checked Grants.gov & web RFPs today — no new high-match grants found yet. Will check again tomorrow!"
+        return "Daily Grant Crawler: Checked foundation portals, web RFPs & federal feeds today — no new high-match grants found yet. Will check again tomorrow!"
 
     top = sorted(matching_grants, key=lambda x: x.get("ai_score", 0), reverse=True)
     best = top[0]

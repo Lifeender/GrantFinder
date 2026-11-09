@@ -44,7 +44,8 @@ DEFAULT_SETTINGS = {
     "auto_crawl_discovered_sources": "true",
     "rfp_indicator_words": "rfp, request for proposals, grant, funding opportunity, notice of funding, nofo, solicitation, application deadline, call for proposals, fellowship, award",
     "exclude_words": "closed, archived, past award, winners announced, expired",
-    # Google Sign-In & Gemini AI settings
+    # Multi-Provider AI & Google Sign-In settings
+    "ai_provider": "gemini",
     "google_auth_mode": "",
     "google_oauth_client_id": "",
     "google_oauth_client_secret": "",
@@ -56,6 +57,10 @@ DEFAULT_SETTINGS = {
     "google_user_picture": "",
     "gemini_api_key": "",
     "gemini_model": "gemini-3.5-flash-lite",
+    "openai_api_key": "",
+    "openai_model": "gpt-4o-mini",
+    "claude_api_key": "",
+    "claude_model": "claude-3-5-haiku-latest",
     "ai_concierge_enabled": "true",
     "ai_min_match_score": "65",
     "ai_user_goal_prompt": "",
@@ -73,20 +78,108 @@ DEFAULT_SOURCES = [
         "notes": "Searches live posted federal grants via Grants.gov REST API v1",
     },
     {
-        "name": "Philanthropy News Digest - Open RFPs",
+        "name": "Federal Register — Live Agency Funding Notices (NOFO/NOFA API)",
+        "url": "https://www.federalregister.gov",
+        "source_type": "api",
+        "enabled": 1,
+        "is_discovered": 0,
+        "notes": "Searches live federal agency Notices of Funding Opportunity across all US departments",
+    },
+    {
+        "name": "National Science Foundation (NSF) — Solicitations & Awards API",
+        "url": "https://www.nsf.gov/funding",
+        "source_type": "api",
+        "enabled": 1,
+        "is_discovered": 0,
+        "notes": "Searches NSF research grants, fellowships, and active program solicitations",
+    },
+    {
+        "name": "NIH Guide for Grants & Contracts — Active Funding Opportunities",
+        "url": "https://grants.nih.gov/grants/guide/newsfeed/fundingopps.xml",
+        "source_type": "rss",
+        "enabled": 1,
+        "is_discovered": 0,
+        "notes": "Official NIH RSS feed of active funding opportunity announcements (FOAs/NOFOs)",
+    },
+    {
+        "name": "Challenge.gov — Open Prize Challenges & Solicitations API",
+        "url": "https://www.challenge.gov",
+        "source_type": "api",
+        "enabled": 1,
+        "is_discovered": 0,
+        "notes": "Federal innovation prize challenges and open grant competitions",
+    },
+    {
+        "name": "Philanthropy News Digest (Candid) — Open Foundation RFPs",
         "url": "https://philanthropynewsdigest.org/rfps",
         "source_type": "html",
         "enabled": 1,
         "is_discovered": 0,
-        "notes": "Foundation Center / Candid listing of open Request for Proposals",
+        "notes": "Foundation Center / Candid listing of open Request for Proposals from private foundations",
     },
     {
-        "name": "Challenge.gov Open Opportunities",
-        "url": "https://www.challenge.gov",
+        "name": "FundsforNGOs — Latest Open Foundation & Nonprofit Grants",
+        "url": "https://www2.fundsforngos.org/category/latest-funds-for-ngos/feed/",
+        "source_type": "rss",
+        "enabled": 1,
+        "is_discovered": 0,
+        "notes": "Daily feed of open international, foundation, nonprofit, and fellowship grants",
+    },
+    {
+        "name": "Russell Sage Foundation — Social Science & Economics Grants",
+        "url": "https://www.russellsage.org/how-to-apply",
         "source_type": "html",
         "enabled": 1,
         "is_discovered": 0,
-        "notes": "Federal prize challenges and funding solicitations",
+        "notes": "Research grants and fellowships in economics, public policy, and social sciences",
+    },
+    {
+        "name": "Spencer Foundation — Education & Research Grant Programs",
+        "url": "https://www.spencer.org/grant_types",
+        "source_type": "html",
+        "enabled": 1,
+        "is_discovered": 0,
+        "notes": "Small and large research grants, fellowships, and field-initiated awards",
+    },
+    {
+        "name": "Alfred P. Sloan Foundation — Science, Economics & Tech Grants",
+        "url": "https://sloan.org/grants/apply",
+        "source_type": "html",
+        "enabled": 1,
+        "is_discovered": 0,
+        "notes": "Private foundation grants in economics, science, technology, and energy",
+    },
+    {
+        "name": "Robert Wood Johnson Foundation (RWJF) — Active Funding Opportunities",
+        "url": "https://www.rwjf.org/en/grants/active-funding-opportunities.html",
+        "source_type": "html",
+        "enabled": 1,
+        "is_discovered": 0,
+        "notes": "Open calls for proposals in policy, community development, health, and equity",
+    },
+    {
+        "name": "Simons Foundation — Open Funding Opportunities & Fellowships",
+        "url": "https://www.simonsfoundation.org/funding-opportunities/",
+        "source_type": "html",
+        "enabled": 1,
+        "is_discovered": 0,
+        "notes": "Research grants, undergraduate/graduate fellowships, and targeted RFPs",
+    },
+    {
+        "name": "Ford Foundation — Current Grant Opportunities",
+        "url": "https://www.fordfoundation.org/work/our-grants/grant-opportunities/",
+        "source_type": "html",
+        "enabled": 1,
+        "is_discovered": 0,
+        "notes": "Open RFPs and fellowships from the Ford Foundation",
+    },
+    {
+        "name": "John Templeton Foundation — Grant Calendar & Funding Areas",
+        "url": "https://www.templeton.org/grants/grant-calendar",
+        "source_type": "html",
+        "enabled": 1,
+        "is_discovered": 0,
+        "notes": "Open grant cycles across sciences, philosophy, economics, and public engagement",
     },
 ]
 
@@ -169,25 +262,27 @@ def init_db() -> None:
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v)
             )
 
-        cur = conn.execute("SELECT COUNT(*) as c FROM sources")
-        if cur.fetchone()["c"] == 0:
-            for src in DEFAULT_SOURCES:
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO sources
-                    (name, url, source_type, enabled, is_discovered, notes, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        src["name"],
-                        src["url"],
-                        src["source_type"],
-                        src["enabled"],
-                        src["is_discovered"],
-                        src["notes"],
-                        now,
-                    ),
-                )
+        for src in DEFAULT_SOURCES:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO sources
+                (name, url, source_type, enabled, is_discovered, notes, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    src["name"],
+                    src["url"],
+                    src["source_type"],
+                    src["enabled"],
+                    src["is_discovered"],
+                    src["notes"],
+                    now,
+                ),
+            )
+        # Ensure Challenge.gov is upgraded to source_type='api' if it existed as 'html'
+        conn.execute(
+            "UPDATE sources SET source_type = 'api' WHERE url = 'https://www.challenge.gov'"
+        )
 
 
 def get_settings() -> Dict[str, str]:

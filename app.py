@@ -37,6 +37,7 @@ from gemini_agent import (
     chat_with_grant_concierge,
     call_gemini,
     verify_and_save_gemini_key,
+    verify_and_save_ai_key,
 )
 import os
 import signal
@@ -83,9 +84,18 @@ class ActivateCrawlerRequest(BaseModel):
 
 
 class QuickConnectRequest(BaseModel):
+    provider: Optional[str] = None
+    api_key: Optional[str] = None
+    model: Optional[str] = None
     gemini_api_key: Optional[str] = None
+    openai_api_key: Optional[str] = None
+    claude_api_key: Optional[str] = None
     google_oauth_client_id: Optional[str] = None
     google_oauth_client_secret: Optional[str] = None
+
+
+class LogoutRequest(BaseModel):
+    provider: Optional[str] = None
 
 
 def _background_scheduler_loop() -> None:
@@ -138,7 +148,7 @@ def serve_dashboard() -> FileResponse:
     return FileResponse(str(STATIC_DIR / "index.html"))
 
 
-# --- GOOGLE SIGN-IN & GEMINI AUTH ENDPOINTS ---
+# --- AI PROVIDER (GEMINI / CHATGPT / CLAUDE) & GOOGLE AUTH ENDPOINTS ---
 
 @app.get("/api/auth/status")
 def api_auth_status() -> Dict[str, Any]:
@@ -198,21 +208,47 @@ def api_auth_quick_connect(body: QuickConnectRequest) -> Dict[str, Any]:
     if body.google_oauth_client_secret is not None:
         updates["google_oauth_client_secret"] = body.google_oauth_client_secret.strip()
 
-    if body.gemini_api_key is not None:
-        ok, msg, model = verify_and_save_gemini_key(body.gemini_api_key)
-        if not ok:
-            return {
-                "ok": False,
-                "message": msg,
-                "model": model,
-                "auth": get_google_auth_status(),
-            }
+    raw_key = (
+        body.api_key
+        if body.api_key is not None
+        else (
+            body.gemini_api_key
+            if body.gemini_api_key is not None
+            else (
+                body.openai_api_key
+                if body.openai_api_key is not None
+                else body.claude_api_key
+            )
+        )
+    )
+    requested_provider = body.provider
+    if not requested_provider:
+        if body.openai_api_key is not None:
+            requested_provider = "openai"
+        elif body.claude_api_key is not None:
+            requested_provider = "claude"
+        elif body.gemini_api_key is not None:
+            requested_provider = "gemini"
+
+    if raw_key is not None and raw_key.strip():
+        ok, msg, model, resolved_provider = verify_and_save_ai_key(
+            raw_key,
+            provider=requested_provider,
+            preferred_model=body.model,
+        )
         return {
-            "ok": True,
+            "ok": ok,
             "message": msg,
             "model": model,
+            "provider": resolved_provider,
             "auth": get_google_auth_status(),
         }
+
+    # Allow switching active provider if already connected
+    if requested_provider in ("gemini", "openai", "claude"):
+        updates["ai_provider"] = requested_provider
+        if body.model and body.model.strip():
+            updates[f"{requested_provider}_model"] = body.model.strip()
 
     if updates:
         update_settings(updates)
@@ -220,7 +256,9 @@ def api_auth_quick_connect(body: QuickConnectRequest) -> Dict[str, Any]:
     status = get_google_auth_status()
     return {
         "ok": status["connected"],
-        "message": "OAuth credentials saved.",
+        "message": f"Switched active AI provider to {status.get('provider_label', 'selected provider')}."
+        if requested_provider
+        else "Credentials updated.",
         "auth": status,
     }
 
@@ -246,18 +284,38 @@ def api_server_shutdown(request: Request) -> Dict[str, Any]:
 
 
 @app.post("/api/auth/logout")
-def api_auth_logout() -> Dict[str, Any]:
-    update_settings(
-        {
-            "google_auth_mode": "",
-            "google_oauth_access_token": "",
-            "google_oauth_refresh_token": "",
-            "google_user_email": "",
-            "google_user_name": "",
-            "google_user_picture": "",
-            "gemini_api_key": "",
-        }
-    )
+def api_auth_logout(body: Optional[LogoutRequest] = None) -> Dict[str, Any]:
+    prov = (body.provider if body and body.provider else "").strip().lower()
+    if prov == "openai":
+        update_settings({"openai_api_key": ""})
+    elif prov == "claude":
+        update_settings({"claude_api_key": ""})
+    elif prov == "gemini":
+        update_settings(
+            {
+                "google_auth_mode": "",
+                "google_oauth_access_token": "",
+                "google_oauth_refresh_token": "",
+                "google_user_email": "",
+                "google_user_name": "",
+                "google_user_picture": "",
+                "gemini_api_key": "",
+            }
+        )
+    else:
+        update_settings(
+            {
+                "google_auth_mode": "",
+                "google_oauth_access_token": "",
+                "google_oauth_refresh_token": "",
+                "google_user_email": "",
+                "google_user_name": "",
+                "google_user_picture": "",
+                "gemini_api_key": "",
+                "openai_api_key": "",
+                "claude_api_key": "",
+            }
+        )
     return get_google_auth_status()
 
 
@@ -467,7 +525,39 @@ def api_delete_source(source_id: int) -> Dict[str, Any]:
     return {"ok": True}
 
 
-SECRET_SETTING_KEYS = {"smtp_password", "gemini_api_key", "google_oauth_client_secret"}
+@app.post("/api/sources/discover")
+def api_discover_sources() -> Dict[str, Any]:
+    tag_rows = list_tagwords(only_enabled=True)
+    tagwords = [r["keyword"] for r in tag_rows]
+    res = discover_sources_and_queries_with_ai(tagwords)
+    added = []
+    for src_obj in res.get("sources") or []:
+        s = add_source(
+            name=str(src_obj.get("name", ""))[:120],
+            url=str(src_obj.get("url", "")).strip(),
+            source_type="html",
+            is_discovered=1,
+            matched_tags=", ".join(tagwords[:3]),
+            notes=str(src_obj.get("notes", "AI-recommended grant source"))[:220],
+            enabled=1,
+        )
+        if s:
+            added.append(s)
+    return {
+        "ok": True,
+        "added_count": len(added),
+        "added_sources": added,
+        "sources": list_sources(),
+    }
+
+
+SECRET_SETTING_KEYS = {
+    "smtp_password",
+    "gemini_api_key",
+    "openai_api_key",
+    "claude_api_key",
+    "google_oauth_client_secret",
+}
 
 
 @app.get("/api/settings")
