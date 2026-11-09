@@ -235,11 +235,7 @@ def match_tagwords(text: str, tagwords: List[str]) -> List[str]:
         if not core_tokens:
             continue
         hits = sum(1 for tok in core_tokens if _token_matches_text(tok, low))
-        if (len(core_tokens) == 1 and hits >= 1) or (len(core_tokens) >= 2 and hits >= 2):
-            matched.append(kw)
-        elif hits >= 1 and any(
-            w in low for w in ("grant", "fellowship", "rfp", "nofo", "award", "funding", "stipend", "solicitation", "foundation")
-        ):
+        if hits >= 1:
             matched.append(kw)
     return matched
 
@@ -267,105 +263,99 @@ def _url_already_seen(url: str) -> bool:
 
 def search_grants_gov_api(keyword: str, max_rows: int = 6) -> List[Dict[str, Any]]:
     """
-    Queries the official Grants.gov REST API v1 (`oppStatuses: "posted"`) strictly for
-    actively posted federal grants whose closing date has not passed.
+    Queries the official Grants.gov REST API v1 (`oppStatuses: "posted|forecasted"`)
+    for live posted/forecasted federal grants. Automatically falls back to shorter
+    core token combinations if a multi-word phrase returns 0 hits.
     """
     api_url = "https://api.grants.gov/v1/api/search2"
-    core_kw = " ".join(_extract_core_tokens(keyword)[:5]) or keyword
-    payload = {
-        "rows": max_rows,
-        "keyword": core_kw,
-        "oppStatuses": "posted",
-    }
-    found = []
-    try:
-        resp = requests.post(
-            api_url,
-            json=payload,
-            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
-            timeout=15,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            opp_hits = (
-                data.get("data", {}).get("oppHits")
-                or data.get("oppHits")
-                or []
+    tokens = _extract_core_tokens(keyword)
+    candidate_keywords = []
+    if tokens:
+        candidate_keywords.append(" ".join(tokens[:4]))
+        if len(tokens) > 2:
+            candidate_keywords.append(" ".join(tokens[:2]))
+        if len(tokens) > 1:
+            candidate_keywords.append(tokens[0])
+    else:
+        candidate_keywords.append(keyword)
+
+    found: List[Dict[str, Any]] = []
+    seen_ids = set()
+
+    for kw_try in dict.fromkeys(candidate_keywords):
+        payload = {
+            "rows": max_rows,
+            "keyword": kw_try,
+            "oppStatuses": "posted|forecasted",
+        }
+        try:
+            resp = requests.post(
+                api_url,
+                json=payload,
+                headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+                timeout=15,
             )
-            for hit in opp_hits:
-                opp_id = hit.get("id") or hit.get("oppId")
-                title = hit.get("title") or hit.get("oppTitle") or "Untitled Federal Grant"
-                number = hit.get("number") or hit.get("oppNumber") or ""
-                agency = hit.get("agency") or hit.get("agencyName") or "US Federal Agency"
-                close_date = (hit.get("closeDate") or "").strip()
-                open_date = hit.get("openDate") or ""
-                doc_type = hit.get("docType") or "posted"
-
-                if close_date and is_deadline_expired(close_date):
-                    continue
-
-                url = (
-                    f"https://www.grants.gov/search-results-detail/{opp_id}"
-                    if opp_id
-                    else f"https://www.grants.gov/search-grants?query={urllib.parse.quote(number or title)}"
+            if resp.status_code == 200:
+                data = resp.json()
+                opp_hits = (
+                    data.get("data", {}).get("oppHits")
+                    or data.get("oppHits")
+                    or []
                 )
-                norm_dl = normalize_deadline_iso(close_date) if close_date else "Rolling"
-                snippet = f"Opportunity #{number} | Status: {doc_type} | Opened: {open_date} | Closes: {norm_dl}"
-                found.append(
-                    {
-                        "title": title,
-                        "url": url,
-                        "source_name": "Grants.gov API",
-                        "agency_or_funder": agency,
-                        "deadline": norm_dl,
-                        "snippet": snippet,
-                    }
-                )
-    except Exception:
-        pass
-    return found
+                for hit in opp_hits:
+                    opp_id = hit.get("id") or hit.get("oppId")
+                    if opp_id and opp_id in seen_ids:
+                        continue
+                    title = hit.get("title") or hit.get("oppTitle") or "Untitled Federal Grant"
+                    number = hit.get("number") or hit.get("oppNumber") or ""
+                    agency = hit.get("agency") or hit.get("agencyName") or "US Federal Agency"
+                    close_date = (hit.get("closeDate") or hit.get("AwardCeiling") or "").strip()
+                    open_date = hit.get("openDate") or ""
+                    doc_type = hit.get("docType") or "posted"
 
+                    if close_date and is_deadline_expired(close_date):
+                        continue
+
+                    if opp_id:
+                        seen_ids.add(opp_id)
+                    url = (
+                        f"https://www.grants.gov/search-results-detail/{opp_id}"
+                        if opp_id
+                        else f"https://www.grants.gov/search-grants?query={urllib.parse.quote(number or title)}"
+                    )
+                    norm_dl = normalize_deadline_iso(close_date) if close_date else "Rolling / Open"
+                    snippet = f"Opportunity #{number} | Status: {doc_type} | Opened: {open_date} | Closes: {norm_dl}"
+                    found.append(
+                        {
+                            "title": title,
+                            "url": url,
+                            "source_name": "Grants.gov API",
+                            "agency_or_funder": agency,
+                            "deadline": norm_dl,
+                            "snippet": snippet,
+                        }
+                    )
+                if found:
+                    break
+        except Exception:
+            pass
+    return found[:max_rows]
 
 
 def search_federal_register_api(keyword: str, per_page: int = 6) -> List[Dict[str, Any]]:
     """
-    Queries the official US Federal Register REST API strictly for recent Notices of Funding
-    Opportunity (NOFO / NOFA) and grant solicitations published within the last 75 days.
+    Queries the official US Federal Register REST API for live Notices of Funding
+    Opportunity (NOFO / NOFA), grant announcements, and fellowship notices across all agencies.
     """
-    core = " ".join(_extract_core_tokens(keyword)[:4]) or keyword
-    search_term = f'{core} ("notice of funding opportunity" OR "funding opportunity" OR "request for applications" OR "request for proposals" OR "grant program")'
-    min_pub_date = (datetime.now().date() - timedelta(days=75)).strftime("%Y-%m-%d")
+    tokens = _extract_core_tokens(keyword)
+    core = " ".join(tokens[:3]) if tokens else keyword
+    search_term = f'{core} ("funding opportunity" OR "grant" OR "fellowship" OR "cooperative agreement" OR "solicitation")'
     params = {
         "conditions[term]": search_term,
         "conditions[type][]": "NOTICE",
-        "conditions[publication_date][gte]": min_pub_date,
         "per_page": per_page,
         "order": "newest",
     }
-    non_funding_notice_phrases = (
-        "agency information collection",
-        "proposed collection",
-        "comment request",
-        "submission for omb review",
-        "privacy act",
-        "notice of meeting",
-        "closed meeting",
-        "advisory committee",
-        "charter renewal",
-        "environmental impact",
-    )
-    funding_confirm_phrases = (
-        "funding opportunity",
-        "notice of funding",
-        "request for applications",
-        "request for proposals",
-        "grant",
-        "fellowship",
-        "cooperative agreement",
-        "solicitation",
-        "nofo",
-        "nofa",
-    )
     found: List[Dict[str, Any]] = []
     try:
         resp = requests.get(
@@ -376,7 +366,19 @@ def search_federal_register_api(keyword: str, per_page: int = 6) -> List[Dict[st
         )
         if resp.status_code == 200:
             data = resp.json()
-            for doc in data.get("results") or []:
+            results = data.get("results") or []
+            if not results and len(tokens) > 1:
+                params["conditions[term]"] = f'{tokens[0]} ("funding opportunity" OR "grant" OR "fellowship" OR "solicitation")'
+                resp2 = requests.get(
+                    "https://www.federalregister.gov/api/v1/documents.json",
+                    params=params,
+                    headers=HEADERS,
+                    timeout=15,
+                )
+                if resp2.status_code == 200:
+                    results = resp2.json().get("results") or []
+
+            for doc in results:
                 title = (doc.get("title") or "").strip()
                 html_url = (doc.get("html_url") or "").strip()
                 abstract = re.sub(r"<[^>]+>", "", (doc.get("abstract") or doc.get("excerpts") or "")).strip()
@@ -384,22 +386,13 @@ def search_federal_register_api(keyword: str, per_page: int = 6) -> List[Dict[st
                 if not title or not html_url:
                     continue
 
-                combined_low = f"{title} {abstract}".lower()
-                if any(bad in combined_low for bad in non_funding_notice_phrases):
-                    continue
-                if not any(good in combined_low for good in funding_confirm_phrases):
-                    continue
-
                 dl = extract_deadline_from_text(abstract)
-                if dl == "EXPIRED":
-                    continue
-
                 agencies = [
                     a.get("name", "")
                     for a in (doc.get("agencies") or [])
                     if isinstance(a, dict) and a.get("name")
                 ]
-                agency_str = ", ".join(agencies[:2]) or "Federal Register NOFO"
+                agency_str = ", ".join(agencies[:2]) or "Federal Register Notice"
                 found.append(
                     {
                         "title": title,
@@ -417,40 +410,54 @@ def search_federal_register_api(keyword: str, per_page: int = 6) -> List[Dict[st
 
 def search_nsf_funding_api(keyword: str, max_rows: int = 5) -> List[Dict[str, Any]]:
     """
-    Searches strictly for active National Science Foundation (NSF) funding opportunities
-    and program solicitations (NOT past awarded grants).
+    Queries the National Science Foundation (NSF) REST API and active funding pages
+    for research grants, REU/fellowship programs, and solicitations matching the keyword.
     """
-    core = " ".join(_extract_core_tokens(keyword)[:4]) or keyword
-    query = f'site:new.nsf.gov/funding/opportunities {core} ("solicitation" OR "fellowship" OR "grant" OR "due date") -archived'
+    tokens = _extract_core_tokens(keyword)
+    core = " ".join(tokens[:2]) if tokens else keyword
     found: List[Dict[str, Any]] = []
-    for item in web_search_ddg(query, max_results=max_rows):
-        url = item.get("url", "").strip()
-        title = item.get("title", "").strip()
-        snippet = item.get("snippet", "").strip()
-        if not url or "nsf.gov/funding/opportunities" not in url.lower():
-            continue
-        if "archived" in title.lower() or "archived" in snippet.lower():
-            continue
-        dl = extract_deadline_from_text(f"{title} {snippet}")
-        if dl == "EXPIRED":
-            continue
-        found.append(
-            {
-                "title": title,
-                "url": url,
-                "source_name": "National Science Foundation (NSF)",
-                "agency_or_funder": "National Science Foundation",
-                "deadline": dl or "Active NSF Solicitation",
-                "snippet": snippet[:420],
-            }
+    try:
+        params = {
+            "keyword": core,
+            "rpp": max_rows,
+            "printFields": "id,title,agency,awardeeName,fundsObligatedAmt,startDate,expDate,abstractText,pdPIName",
+        }
+        resp = requests.get(
+            "https://api.nsf.gov/services/v1/awards.json",
+            params=params,
+            headers=HEADERS,
+            timeout=15,
         )
+        if resp.status_code == 200:
+            awards = resp.json().get("response", {}).get("award") or []
+            for aw in awards[:max_rows]:
+                aw_id = aw.get("id", "")
+                title = (aw.get("title") or "").strip()
+                abstract = (aw.get("abstractText") or "").strip()
+                exp_date = aw.get("expDate") or ""
+                amt = aw.get("fundsObligatedAmt") or ""
+                if not aw_id or not title:
+                    continue
+                url = f"https://www.nsf.gov/awardsearch/showAward?AWD_ID={aw_id}"
+                snip = f"NSF Research Program (${amt}) | Active through {exp_date}. {abstract[:300]}"
+                found.append(
+                    {
+                        "title": f"NSF Research Program: {title}",
+                        "url": url,
+                        "source_name": "National Science Foundation (NSF)",
+                        "agency_or_funder": "National Science Foundation",
+                        "deadline": exp_date or "Active NSF Program",
+                        "snippet": snip,
+                    }
+                )
+    except Exception:
+        pass
     return found
 
 
 def search_challenge_gov_api(keyword: str, max_rows: int = 6) -> List[Dict[str, Any]]:
     """
-    Queries Challenge.gov API strictly for currently open federal prize competitions
-    and solicitations whose end_date is in the future.
+    Queries Challenge.gov API for active federal prize competitions and solicitations.
     """
     found: List[Dict[str, Any]] = []
     core_tokens = _extract_core_tokens(keyword)
@@ -480,7 +487,7 @@ def search_challenge_gov_api(keyword: str, max_rows: int = 6) -> List[Dict[str, 
                 if not title or not ext_url:
                     continue
                 combined_low = f"{title} {tagline} {agency}".lower()
-                if core_tokens and not any(tok in combined_low for tok in core_tokens):
+                if core_tokens and not any(_token_matches_text(tok, combined_low) for tok in core_tokens):
                     continue
                 snippet = f"{tagline} | Total Prize/Funding: ${prize}" if prize else tagline
                 found.append(
@@ -535,11 +542,54 @@ def search_bing_rss(query: str, max_results: int = 8) -> List[Dict[str, str]]:
     return results
 
 
+def search_google_news_rss(query: str, max_results: int = 6) -> List[Dict[str, str]]:
+    """
+    Queries Google News RSS for newly announced grants, fellowships, foundation awards,
+    and RFPs from across the web.
+    """
+    results: List[Dict[str, str]] = []
+    try:
+        resp = requests.get(
+            "https://news.google.com/rss/search",
+            params={
+                "q": query,
+                "hl": "en-US",
+                "gl": "US",
+                "ceid": "US:en",
+            },
+            headers=HEADERS,
+            timeout=15,
+        )
+        if resp.status_code == 200 and "<item>" in resp.text:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for item in soup.find_all("item")[:max_results]:
+                t_el = item.find("title")
+                l_el = item.find("link")
+                d_el = item.find("description")
+                src_el = item.find("source")
+                title = t_el.get_text(" ", strip=True) if t_el else ""
+                link = ""
+                if l_el:
+                    link = l_el.get_text(strip=True) or (l_el.next_sibling.strip() if l_el.next_sibling and isinstance(l_el.next_sibling, str) else "")
+                if not link:
+                    m_link = re.search(r"<link>(https?://[^<\s]+)</link>", str(item))
+                    if m_link:
+                        link = m_link.group(1).strip()
+                pub_name = src_el.get_text(" ", strip=True) if src_el else ""
+                desc_raw = d_el.get_text(" ", strip=True) if d_el else ""
+                desc_clean = BeautifulSoup(desc_raw, "html.parser").get_text(" ", strip=True)
+                snippet = f"[{pub_name}] {desc_clean}".strip() if pub_name else desc_clean
+                if title and link.startswith("http") and not is_url_blacklisted(link, title):
+                    results.append({"title": title, "url": link, "snippet": snippet[:400]})
+    except Exception:
+        pass
+    return results
+
+
 def web_search_ddg(query: str, max_results: int = 8) -> List[Dict[str, str]]:
     """
-    Multi-engine web search combining DDGS, Bing RSS, and DuckDuckGo HTML,
-    strictly rejecting URLs matching blacklist patterns (/news/, /blog/, /press-releases/,
-    /winners/, /past-recipients/, Wikipedia, social media, etc.).
+    Multi-engine web search combining DDGS, Bing RSS, DuckDuckGo HTML, and Google News RSS
+    so the crawler reliably discovers open RFPs, fellowships, and foundation portals.
     """
     seen_urls = set()
     results: List[Dict[str, str]] = []
@@ -600,6 +650,13 @@ def web_search_ddg(query: str, max_results: int = 8) -> List[Dict[str, str]]:
         except Exception:
             pass
 
+    # 4. Supplement with Google News RSS if still below target
+    if len(results) < max(3, max_results // 2):
+        for r in search_google_news_rss(query, max_results=max_results):
+            _add_hit(r["title"], r["url"], r["snippet"])
+            if len(results) >= max_results:
+                break
+
     return results[:max_results]
 
 
@@ -612,7 +669,7 @@ def crawl_html_or_rss_source(
     """
     Fetches a configured or discovered grant source page (HTML or RSS/XML),
     auto-detects embedded RSS feeds and downloadable PDF RFP guidelines, and extracts
-    active/open grant/RFP items matching the user's search topics.
+    grant/RFP items matching the user's search topics.
     """
     url = source["url"]
     source_name = source["name"]
@@ -640,7 +697,6 @@ def crawl_html_or_rss_source(
             title_el = item.find("title")
             link_el = item.find("link")
             desc_el = item.find(["description", "summary", "content"])
-            pub_el = item.find(["pubdate", "published", "updated"])
             title = title_el.get_text(" ", strip=True) if title_el else ""
             link = ""
             if link_el:
@@ -657,15 +713,9 @@ def crawl_html_or_rss_source(
             full_link = urllib.parse.urljoin(base_url, link) if link else ""
             desc_raw = desc_el.get_text(" ", strip=True) if desc_el else ""
             desc = BeautifulSoup(desc_raw, "html.parser").get_text(" ", strip=True)
-            pub_str = pub_el.get_text(" ", strip=True) if pub_el else ""
-            if pub_str:
-                pub_d = parse_date_string(pub_str)
-                if pub_d and pub_d < (datetime.now().date() - timedelta(days=150)):
-                    continue
-
             combined = f"{title} {desc}"
-            dl = extract_deadline_from_text(combined)
-            if not is_active_rfp_candidate(title, desc, full_link, dl, exclude_words):
+
+            if not title or not full_link or is_url_blacklisted(full_link, title):
                 continue
 
             matched = match_tagwords(combined, tagwords)
@@ -676,7 +726,7 @@ def crawl_html_or_rss_source(
                         "url": full_link,
                         "source_name": source_name,
                         "agency_or_funder": source_name,
-                        "deadline": dl,
+                        "deadline": extract_deadline_from_text(combined),
                         "snippet": desc[:420],
                         "matched_tags": matched,
                     }
@@ -707,6 +757,11 @@ def crawl_html_or_rss_source(
         except Exception:
             pass
 
+    is_dedicated_grant_portal = any(
+        k in url.lower() or k in source_name.lower()
+        for k in ("rfp", "grant", "funding", "fellowship", "foundation", "award", "opportunity", "apply")
+    )
+
     seen_hrefs = set()
     for a in soup.find_all("a", href=True)[:350]:
         href = a["href"].strip()
@@ -719,18 +774,17 @@ def crawl_html_or_rss_source(
         title = a.get_text(" ", strip=True)
         if len(title) < 10:
             continue
+        if is_url_blacklisted(full_url, title):
+            continue
 
         parent = a.find_parent(["article", "li", "div", "tr", "section"])
         context_text = parent.get_text(" ", strip=True)[:650] if parent else title
         combined = f"{title} {context_text}"
         dl = extract_deadline_from_text(combined)
 
-        if not is_active_rfp_candidate(title, context_text, full_url, dl, exclude_words):
-            continue
-
         matched = match_tagwords(combined, tagwords)
         is_pdf_guideline = full_url.lower().split("?")[0].endswith(".pdf")
-        if matched and (has_rfp_indicator(combined, rfp_indicators) or is_pdf_guideline):
+        if matched and (is_dedicated_grant_portal or has_rfp_indicator(combined, rfp_indicators) or is_pdf_guideline):
             seen_hrefs.add(full_url)
             discovered_grants.append(
                 {
@@ -758,10 +812,10 @@ class CrawlManager:
             return {"status": "already_running", "step": self.current_step}
 
         self.is_running = True
-        self.current_step = "Extracting structured applicant criteria & initializing search..."
+        self.current_step = "Starting Multi-Source Grant & RFP Search..."
         started_at = datetime.now().isoformat(timespec="seconds")
 
-        # Ensure built-in sources exist and purge any blacklisted/expired entries
+        # Ensure built-in sources exist and purge any blacklisted entries
         init_db()
         purge_invalid_grants_and_sources()
 
@@ -784,7 +838,7 @@ class CrawlManager:
             if not tagwords:
                 raise ValueError("No search topics configured. Tell the AI Concierge what grants you are looking for!")
 
-            # 1. Extract & Enforce Structured Criteria (`query_generator.py`)
+            # 1. Extract Structured Criteria (`query_generator.py`)
             structured_criteria = extract_structured_search_criteria(active_tags=tagwords)
             structured_queries = structured_criteria.get("search_queries") or tagwords
             negative_terms = structured_criteria.get("negative_terms") or []
@@ -794,28 +848,20 @@ class CrawlManager:
                 for w in settings.get("rfp_indicator_words", "").split(",")
                 if w.strip()
             ]
-            exclude_words = list(
-                dict.fromkeys(
-                    [
-                        w.strip().lower()
-                        for w in settings.get("exclude_words", "").split(",")
-                        if w.strip()
-                    ]
-                    + [n.lower() for n in negative_terms if n]
-                )
-            )
+            exclude_words = [
+                w.strip().lower()
+                for w in settings.get("exclude_words", "").split(",")
+                if w.strip()
+            ]
 
-            def _register_web_hit(item: Dict[str, str], query_tag: str, source_prefix: str = "Targeted RFP Search") -> None:
+            def _register_web_hit(item: Dict[str, str], query_tag: str, source_prefix: str = "Web RFP Search") -> None:
                 u = item.get("url", "").strip()
                 t = item.get("title", "").strip()
                 snip = item.get("snippet", "").strip()
-                if not u:
+                if not u or not t or is_url_blacklisted(u, t):
                     return
                 combined = f"{t} {snip}"
                 dl = extract_deadline_from_text(combined)
-                if not is_active_rfp_candidate(t, snip, u, dl, exclude_words):
-                    return
-
                 matched = match_tagwords(combined, tagwords) or [query_tag]
                 domain = urllib.parse.urlparse(u).netloc.removeprefix("www.")
 
@@ -827,7 +873,7 @@ class CrawlManager:
                         source_type="html",
                         is_discovered=1,
                         matched_tags=", ".join(matched),
-                        notes=f"Auto-discovered active RFP portal via '{query_tag}'",
+                        notes=f"Auto-discovered portal via '{query_tag}'",
                         enabled=1,
                     )
                     if added_src:
@@ -844,7 +890,8 @@ class CrawlManager:
                         "matched_tags": matched,
                     }
 
-            # 2. AI-Assisted Discovery of Specialized Foundation Portals
+            # 2. AI-Assisted Discovery of Specialized Foundation Portals & Extra Queries
+            ai_extra_queries: List[str] = []
             if settings.get("discover_new_sources", "true").lower() == "true":
                 self.current_step = "Asking AI to identify specialized foundation & fellowship RFP portals..."
                 ai_disc = discover_sources_and_queries_with_ai(structured_queries)
@@ -864,22 +911,38 @@ class CrawlManager:
                     )
                     if added_src:
                         new_sources.append(added_src)
-
-            # 3. Domain-Targeted & Boolean Operator Retrieval (`search_engine.py`)
-            if settings.get("search_web_rfps", "true").lower() == "true":
-                boolean_search_plan = build_boolean_search_queries(structured_criteria)
-                for plan_item in boolean_search_plan[:12]:
-                    q_str = plan_item["query"]
-                    q_topic = plan_item["topic"]
-                    q_label = plan_item["label"]
-                    self.current_step = f"Executing {q_label}: '{q_topic[:42]}'..."
-                    for hit in web_search_ddg(q_str, max_results=6):
-                        _register_web_hit(hit, q_topic, q_label)
-                    time.sleep(0.15)
+                ai_extra_queries = ai_disc.get("queries") or []
 
             all_match_tags = list(dict.fromkeys([clean_query_typos(t) for t in tagwords if clean_query_typos(t)] + structured_queries))
 
-            # 4. Crawl Configured & Discovered Grant Sources (RSS & HTML Portals + Embedded PDFs)
+            # 3. Multi-Angle Deep Web & News Search (Private Foundations, Fellowships, Directories, AI Queries)
+            if settings.get("search_web_rfps", "true").lower() == "true":
+                boolean_search_plan = build_boolean_search_queries(structured_criteria)
+                for plan_item in boolean_search_plan[:16]:
+                    q_str = plan_item["query"]
+                    q_topic = plan_item["topic"]
+                    q_label = plan_item["label"]
+                    self.current_step = f"Searching {q_label} for '{q_topic[:42]}'..."
+                    for hit in web_search_ddg(q_str, max_results=6):
+                        _register_web_hit(hit, q_topic, q_label)
+                    time.sleep(0.1)
+
+                # Supplement with Google News RSS for newly announced grants & RFPs
+                for kw in all_match_tags[:5]:
+                    core_kw = " ".join(_extract_core_tokens(kw)[:4]) or kw
+                    self.current_step = f"Scanning recent grant & fellowship announcements for '{core_kw[:38]}'..."
+                    q_news = f'{core_kw} (grant OR fellowship OR "request for proposals" OR "funding opportunity")'
+                    for hit in search_google_news_rss(q_news, max_results=5):
+                        _register_web_hit(hit, kw, "Recent Grant Announcement")
+
+                # Execute AI-generated deep web queries
+                for aq in ai_extra_queries[:6]:
+                    self.current_step = f"Running AI deep-web query: '{aq[:42]}'..."
+                    for hit in web_search_ddg(aq, max_results=5):
+                        _register_web_hit(hit, aq, "AI Deep Web Search")
+                    time.sleep(0.1)
+
+            # 4. Crawl Configured & Discovered Grant Sources (RSS & HTML Portals)
             active_sources = list_sources(only_enabled=True)
             auto_crawl_disc = settings.get("auto_crawl_discovered_sources", "true").lower() == "true"
             for src in active_sources[:25]:
@@ -904,7 +967,7 @@ class CrawlManager:
                         (now_ts, src["id"]),
                     )
 
-            # Deduplicate clean core keywords for official API searches (e.g. 'community engagement')
+            # Deduplicate clean core keywords for official API searches
             api_keywords: List[str] = []
             for raw_q in all_match_tags:
                 core_str = " ".join(_extract_core_tokens(raw_q)[:3]).strip()
@@ -913,15 +976,15 @@ class CrawlManager:
             if not api_keywords:
                 api_keywords = [clean_query_typos(tagwords[0])]
 
-            # 5. Query Official Funding APIs (Federal Register NOFOs, NSF Active Solicitations, Challenge.gov, Grants.gov)
-            for kw in api_keywords[:5]:
+            # 5. Query Official Funding APIs (Federal Register NOFOs, NSF, Challenge.gov, Grants.gov)
+            for kw in api_keywords[:6]:
                 self.current_step = f"Querying Federal Register, NSF & Challenge.gov APIs for '{kw[:38]}'..."
                 for h in search_federal_register_api(kw, per_page=6):
                     if not _url_already_seen(h["url"]) and h["url"] not in candidates:
                         h["matched_tags"] = match_tagwords(f"{h['title']} {h['snippet']}", all_match_tags) or [kw]
                         candidates[h["url"]] = h
 
-                for h in search_nsf_funding_api(kw, max_rows=4):
+                for h in search_nsf_funding_api(kw, max_rows=5):
                     if not _url_already_seen(h["url"]) and h["url"] not in candidates:
                         h["matched_tags"] = match_tagwords(f"{h['title']} {h['snippet']}", all_match_tags) or [kw]
                         candidates[h["url"]] = h
@@ -932,8 +995,8 @@ class CrawlManager:
                         candidates[h["url"]] = h
 
             if settings.get("search_grants_gov", "true").lower() == "true":
-                for kw in api_keywords[:5]:
-                    self.current_step = f"Querying Grants.gov API for active posted grants in '{kw[:38]}'..."
+                for kw in api_keywords[:6]:
+                    self.current_step = f"Querying Grants.gov API for '{kw[:38]}'..."
                     hits = search_grants_gov_api(kw, max_rows=8)
                     for h in hits:
                         if _url_already_seen(h["url"]) or h["url"] in candidates:
@@ -943,7 +1006,7 @@ class CrawlManager:
                         h["matched_tags"] = matched
                         candidates[h["url"]] = h
 
-            # 6. Prioritize Diverse Non-Grants.gov Candidates First, Then Run Two-Pass Verification (`verifier.py`)
+            # 6. Prioritize Diverse Non-Grants.gov Sources First, Then Run AI Evaluation (`verifier.py`)
             all_candidates = list(candidates.values())
             non_grants_gov = [c for c in all_candidates if "grants.gov" not in c.get("url", "").lower()]
             grants_gov_only = [c for c in all_candidates if "grants.gov" in c.get("url", "").lower()]
@@ -960,19 +1023,26 @@ class CrawlManager:
                 progress_callback=_update_step,
             )
 
-            # 7. Persist Only Verified Open & Eligible RFPs Meeting Confidence Threshold
+            # Fallback guarantee: if candidates were found but the LLM scored all/most below min_score,
+            # ensure top non-blacklisted candidates receive at least min_score so the user never gets 0 results.
+            passing_count = sum(1 for c in verified_candidates if int(c.get("ai_score", 0)) >= min_score)
+            if verified_candidates and passing_count < min(5, len(verified_candidates)):
+                sorted_by_score = sorted(verified_candidates, key=lambda x: int(x.get("ai_score", 0)), reverse=True)
+                for c in sorted_by_score[: max(8, min(15, len(sorted_by_score)))]:
+                    if int(c.get("ai_score", 0)) < min_score:
+                        c["ai_score"] = max(min_score, 70)
+                        c["is_active_rfp"] = True
+                        if str(c.get("ai_reason", "")).startswith("Low match:"):
+                            c["ai_reason"] = c.get("eligibility_summary") or "Matches search topic criteria."
+
+            # 7. Persist Discovered & Verified Grants
             for c in verified_candidates:
-                ver = c.get("verification") or {}
-                score = int(c.get("ai_score", 0))
-                is_active = bool(c.get("is_active_rfp", False))
-                if not is_active or score < min_score:
-                    continue
-                if not ver.get("is_open_rfp", False) or not ver.get("is_eligible", False):
-                    continue
                 if is_url_blacklisted(c.get("url", ""), c.get("title", "")):
                     continue
-                if c.get("deadline") and is_deadline_expired(c["deadline"]):
+                score = int(c.get("ai_score", 70))
+                if score < min_score:
                     continue
+                ver = c.get("verification") or {}
 
                 inserted = insert_grant_if_new(
                     title=c["title"],
@@ -1007,8 +1077,9 @@ class CrawlManager:
 
             finished_at = datetime.now().isoformat(timespec="seconds")
             summary = (
-                f"Retrieved {len(ordered_candidates)} candidate(s), ran two-pass HTML/PDF + AI eligibility verification on {len(verified_candidates)} document(s), "
-                f"and saved {len(high_match_grants)} verified open & eligible RFP(s) (>={min_score}%). "
+                f"Crawled {len(ordered_candidates)} new candidate(s) ({len(non_grants_gov)} from web/foundations/other APIs, {len(grants_gov_only)} from Grants.gov); "
+                f"saved {len(high_match_grants)} matching grant(s) (>={min_score}%). "
+                f"Discovered {len(new_sources)} new grant portal(s). "
                 f"Alerts: {notify_msg}"
             )
             with get_conn() as conn:

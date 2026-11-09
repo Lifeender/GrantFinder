@@ -81,7 +81,7 @@ MONTH_MAP = {
 # =====================================================================
 
 # Domains that are NEVER open grant/RFP solicitations (encyclopedias, social media,
-# job boards, academic paper archives, e-commerce, and mainstream news outlets).
+# job boards, and e-commerce).
 BLOCKED_DOMAINS = (
     "wikipedia.org",
     "wikimedia.org",
@@ -103,8 +103,6 @@ BLOCKED_DOMAINS = (
     "tiktok.com",
     "pinterest.com",
     "threads.net",
-    "medium.com",
-    "substack.com",
     "tumblr.com",
     "amazon.com",
     "ebay.com",
@@ -118,77 +116,15 @@ BLOCKED_DOMAINS = (
     "simplyhired.com",
     "salary.com",
     "payscale.com",
-    "researchgate.net",
-    "academia.edu",
-    "jstor.org",
-    "arxiv.org",
-    "scholar.google.com",
-    "pubmed.ncbi.nlm.nih.gov",
-    "doi.org",
-    "sciencedirect.com",
-    "springer.com",
-    "wiley.com",
-    "tandfonline.com",
-    "mdpi.com",
-    "frontiersin.org",
-    "plos.org",
-    "ssrn.com",
-    "sagepub.com",
-    "oup.com",
-    "cambridge.org",
-    "coursera.org",
-    "udemy.com",
-    "edx.org",
-    "khanacademy.org",
     "chegg.com",
     "coursehero.com",
-    "nytimes.com",
-    "washingtonpost.com",
-    "wsj.com",
-    "cnn.com",
-    "bbc.com",
-    "bbc.co.uk",
-    "theguardian.com",
-    "forbes.com",
-    "bloomberg.com",
-    "reuters.com",
-    "apnews.com",
-    "npr.org",
-    "politico.com",
-    "thehill.com",
-    "vox.com",
-    "theatlantic.com",
-    "newyorker.com",
-    "yahoo.com",
-    "msn.com",
-    "news.google.com",
 )
 
-# URL path substrings that indicate a page is a blog post, press release, past winner list,
-# login screen, job posting, or historical NSF award record rather than an open RFP.
+# URL path substrings that indicate navigation noise, login screens, or job postings.
 BLACKLIST_URL_PATTERNS = (
-    "/news/",
-    "/blog/",
-    "/blogs/",
-    "/press-releases/",
-    "/press-release/",
-    "/news-release/",
-    "/media-release/",
-    "/winners/",
-    "/award-winners/",
-    "/past-recipients/",
-    "/past-grantees/",
-    "/past-fellows/",
-    "/previous-recipients/",
-    "/awardees/",
-    "/grantee-profiles/",
-    "/fellow-profiles/",
-    "/alumni/",
     "/wiki/",
     "/encyclopedia/",
     "/dictionary/",
-    "/podcast/",
-    "/video/",
     "/watch?",
     "/login",
     "/signin",
@@ -201,27 +137,22 @@ BLACKLIST_URL_PATTERNS = (
     "/careers",
     "/jobs/",
     "/employment",
-    "/staff",
-    "/board-of-directors",
-    "/annual-report",
-    "/financials",
     "/donate",
     "/ways-to-give",
     "/support-us",
-    "/awardsearch/showaward",
-    "/ncbi.nlm.nih.gov/pmc",
 )
 
 # =====================================================================
 # 3. DEADLINE EXTRACTION & EXPIRATION CHECKING
 # =====================================================================
 
-# IMPORTANT: We ONLY match dates preceded by explicit closing/deadline keywords
-# (e.g., "Deadline:", "Due Date:", "Closes:"). We intentionally do NOT match bare dates
-# or "Opened:" / "Posted:" dates, because active grants open in the past and close in the future.
 DEADLINE_PATTERNS = [
     re.compile(
         r"(?:deadline|due date|closing date|closes|apply by|submission date|applications due|proposals due|letters of intent due|loi due|close date)[:\s]+([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+20\d{2}|\d{1,2}/\d{1,2}/20\d{2}|20\d{2}-\d{2}-\d{2}|\d{1,2}\s+[A-Za-z]{3,9}\s+20\d{2})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+20\d{2})\b",
         re.IGNORECASE,
     ),
 ]
@@ -304,20 +235,13 @@ def normalize_deadline_iso(text: str) -> str:
 
 def is_deadline_expired(deadline_str: str) -> bool:
     """
-    Determines whether a solicitation deadline has already passed (`< today`).
-    - Rolling / ongoing / open deadlines are never treated as expired.
-    - "Published YYYY-MM-DD" strings (used by Federal Register notices without a
-      parsed closing date) expire after 150 days.
+    Determines whether an explicit solicitation deadline has already passed (`< today`).
+    - Rolling / ongoing / open / Published deadlines are never treated as expired.
     """
     if not deadline_str:
         return False
     low = deadline_str.lower().strip()
-    if any(w in low for w in ("rolling", "ongoing", "open", "active", "continuous", "tbd")):
-        return False
-    if low.startswith("published "):
-        pub_d = parse_date_string(deadline_str)
-        if pub_d and pub_d < (datetime.now().date() - timedelta(days=150)):
-            return True
+    if any(w in low for w in ("rolling", "ongoing", "open", "active", "continuous", "tbd", "published")):
         return False
 
     parsed = parse_date_string(deadline_str)
@@ -325,48 +249,42 @@ def is_deadline_expired(deadline_str: str) -> bool:
     if parsed:
         return parsed < today
 
-    # Fallback: if only 4-digit years are present and the latest year is strictly before this year
+    # Fallback: only treat as expired if a 4-digit year is strictly more than 1 year in the past
     years = [int(y) for y in re.findall(r"\b(20\d{2})\b", deadline_str)]
-    if years and max(years) < today.year:
+    if years and max(years) < (today.year - 1):
         return True
     return False
 
 
 def has_stale_year_in_title_or_url(title: str, url: str = "") -> bool:
     """
-    Checks if the TITLE explicitly names a past grant cycle year (e.g. '2022 Request for Proposals').
-    NOTE: We intentionally do NOT inspect numeric substrings in URLs because grant IDs
-    (such as `grants.gov/search-results-detail/352019`) frequently contain `20xx` digits.
+    Checks if the TITLE explicitly names an archaic grant cycle year (2+ years old,
+    e.g., '2021 Request for Proposals'). Allows prior-year/multi-year titles like 2025/2026.
     """
     current_year = datetime.now().year
     years = [int(y) for y in re.findall(r"\b(20[12]\d)\b", title or "")]
     if not years:
         return False
-    return max(years) < current_year
+    return max(years) < (current_year - 1)
 
 
 def extract_deadline_from_text(text: str) -> str:
     """
-    Scans document text for explicit closing deadlines (`DEADLINE_PATTERNS`).
-    If multiple deadline dates are mentioned on a page (for example, Cycle 1 in the past
-    and Cycle 2 in the future), prefers the active/future deadline.
-    Returns `'EXPIRED'` ONLY if explicit deadline date(s) were found and ALL of them are in the past.
+    Scans document text for closing deadlines (`DEADLINE_PATTERNS`).
+    Prefers future deadlines; if none are in the future, returns empty string `""`
+    rather than hard-expiring the entire page (since many recurring grant pages mention
+    prior cycle dates while remaining open or rolling).
     """
     if not text:
         return ""
     found_future: List[str] = []
-    found_expired: List[str] = []
     for pat in DEADLINE_PATTERNS:
         for m in pat.finditer(text):
             cand = m.group(1).strip()
-            if is_deadline_expired(cand):
-                found_expired.append(cand)
-            else:
+            if not is_deadline_expired(cand):
                 found_future.append(normalize_deadline_iso(cand))
     if found_future:
         return found_future[0]
-    if found_expired:
-        return "EXPIRED"
     return ""
 
 
@@ -375,8 +293,8 @@ def is_url_blacklisted(url: str, title: str = "") -> bool:
     Master URL & Title Blacklist Gate:
     Returns `True` (reject) if the URL or title matches:
     1. Any domain in `BLOCKED_DOMAINS` (Wikipedia, social media, job sites, etc.)
-    2. Any URL path in `BLACKLIST_URL_PATTERNS` (`/news/`, `/blog/`, `/winners/`, etc.)
-    3. A stale grant cycle year in the title (e.g., `"2021 RFP"`).
+    2. Any URL path in `BLACKLIST_URL_PATTERNS` (`/login`, `/careers`, `/wiki/`, etc.)
+    3. An archaic grant cycle year in the title.
     """
     u = (url or "").strip().lower()
     t = (title or "").strip().lower()
@@ -391,15 +309,12 @@ def is_url_blacklisted(url: str, title: str = "") -> bool:
     if not host:
         return True
 
-    # Check domain against BLOCKED_DOMAINS
     for bad_dom in BLOCKED_DOMAINS:
         if host == bad_dom or host.endswith("." + bad_dom):
             return True
 
-    # Exception: Official NIH Guide RSS feed URL uses `/grants/guide/newsfeed/fundingopps.xml`
-    u_for_path_check = u.replace("/grants/guide/newsfeed/", "/grants/guide/feed/")
     for pat in BLACKLIST_URL_PATTERNS:
-        if pat in u_for_path_check:
+        if pat in u:
             return True
 
     if "wikipedia" in t or "free encyclopedia" in t:
@@ -412,21 +327,16 @@ def is_url_blacklisted(url: str, title: str = "") -> bool:
 
 
 # =====================================================================
-# 4. BOOLEAN & DOMAIN-TARGETED SEARCH QUERY BUILDER
+# 4. MULTI-ANGLE SEARCH QUERY BUILDER (RESTORED HIGH-RECALL ANGLES)
 # =====================================================================
 
 def build_boolean_search_queries(criteria: Dict[str, Any]) -> List[Dict[str, str]]:
     """
-    Builds high-recall, high-precision search strings for web discovery (`crawler.py`).
-    For each user search topic, creates 4 complementary search queries:
-    1. Portal-Targeted Boolean Query: Targets `grants.gov`, `philanthropynewsdigest.org/rfps`,
-       and `sam.gov` with `(filetype:pdf OR inurl:rfp OR inurl:nofo)`.
-    2. Foundation RFP Directory Query: Targets `philanthropynewsdigest.org/rfps`,
-       `fundsforngos.org`, `instrumentl.com/grants`, and `rwjf.org`.
-    3. Open Web RFP / Solicitation Query: Searches across foundations, state portals, and
-       universities while excluding Wikipedia and award announcements.
-    4. Downloadable Grant Guidelines / PDF Query: Specifically looks for downloadable PDF
-       RFP/NOFO guidelines (`filetype:pdf OR inurl:rfp OR inurl:grants`).
+    Builds high-recall, search-engine-friendly queries across 4 angles for each topic:
+    1. Private Foundation & Nonprofit RFPs (`"request for proposals" OR "call for proposals" OR "foundation grant" OR "grant opportunity"`)
+    2. Fellowships, Research Grants & Stipends (`"fellowship" OR "research grant" OR "seed grant" OR "stipend" OR "application deadline"`)
+    3. Major Philanthropy & Grant Directories (`philanthropynewsdigest.org/rfps`, `fundsforngos.org`, `profellow.com`, `grantwatch.com`, `instrumentl.com`)
+    4. Active Grant Portals & Open Funding Opportunities (`"grant opportunities" OR "funding opportunities" OR "open RFPs"`)
     """
     base_queries = criteria.get("search_queries") or []
     project_domain = criteria.get("project_domain") or ""
@@ -442,42 +352,44 @@ def build_boolean_search_queries(criteria: Dict[str, Any]) -> List[Dict[str, str
             seen_q.add(q_clean)
             compiled.append({"query": q_clean, "topic": topic, "label": label})
 
-    for q in base_queries[:4]:
-        # Strip trailing generic RFP words from `q` so we can combine `topic_core` cleanly
+    for q in base_queries[:6]:
         topic_core = re.sub(
-            r'\b(grant|grants|rfp|rfps|nofo|notice of funding opportunity|request for proposals|solicitation|guidelines|funding)\b',
+            r'\b(grant|grants|rfp|rfps|nofo|notice of funding opportunity|request for proposals|solicitation|guidelines|funding|opportunity|opportunities)\b',
             " ",
             re.sub(r'\(".*?"\)', " ", q),
             flags=re.IGNORECASE,
         )
         topic_core = re.sub(r"\s+", " ", topic_core).strip() or q.strip()
+        # Keep core phrase concise (up to 4 words) so search engines don't over-constrain
+        core_words = topic_core.split()[:4]
+        short_core = " ".join(core_words) if core_words else topic_core
 
-        # Plan 1: Portal-targeted Boolean query
+        # Angle A: Private Foundation & Nonprofit RFPs
         _add_plan(
-            f'(site:grants.gov OR site:philanthropynewsdigest.org/rfps OR site:sam.gov) {topic_core} (filetype:pdf OR inurl:rfp OR inurl:nofo OR "RFP" OR "grant")',
-            topic_core,
-            "Targeted Grant Portal (RFP/NOFO)",
+            f'{short_core} ("request for proposals" OR "call for proposals" OR "foundation grant" OR "grant opportunity") -site:grants.gov -site:wikipedia.org',
+            short_core,
+            "Foundation / Web RFP",
         )
 
-        # Plan 2: Direct Philanthropy & Foundation RFP Directory search
+        # Angle B: Fellowships, Research Grants, Academic & Association Awards
         _add_plan(
-            f'(site:philanthropynewsdigest.org/rfps OR site:fundsforngos.org OR site:instrumentl.com/grants OR site:rwjf.org) {topic_core} grant OR RFP',
-            topic_core,
-            "Foundation RFP Directory",
+            f'{short_core} ("fellowship" OR "research grant" OR "seed grant" OR "stipend" OR "application deadline") -site:grants.gov -site:wikipedia.org',
+            short_core,
+            "Fellowship & Research Search",
         )
 
-        # Plan 3: High-intent Open RFP / Solicitation Web Search
+        # Angle C: Major Grant & Fellowship Directories
         _add_plan(
-            f'{topic_core} ("Request for Proposals" OR "Notice of Funding Opportunity" OR "grant opportunity" OR "open RFP") apply deadline -site:wikipedia.org -site:grants.gov -"winner announced"',
-            topic_core,
-            "Open Web RFP / Solicitation",
+            f'(site:philanthropynewsdigest.org/rfps OR site:fundsforngos.org OR site:profellow.com OR site:grantwatch.com OR site:instrumentl.com) {short_core}',
+            short_core,
+            "Grant Directory",
         )
 
-        # Plan 4: Downloadable Grant Guidelines & NOFO PDF Search
+        # Angle D: Grant Portals & Open Funding Opportunities
         _add_plan(
-            f'{topic_core} ("Grant Guidelines" OR "RFP" OR "NOFO" OR "Call for Proposals") (filetype:pdf OR inurl:rfp OR inurl:grants) apply -site:wikipedia.org',
-            topic_core,
-            "RFP / NOFO Guidelines",
+            f'{short_core} ("grant opportunities" OR "funding opportunities" OR "open RFPs" OR "notice of funding opportunity") -site:wikipedia.org',
+            short_core,
+            "Open Funding Opportunity",
         )
 
     return compiled

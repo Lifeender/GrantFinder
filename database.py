@@ -323,9 +323,8 @@ def init_db() -> None:
 
 def purge_invalid_grants_and_sources() -> None:
     """
-    Removes any previously saved grants or auto-discovered sources from non-RFP
-    domains (e.g., Wikipedia, social media, academic paper repositories, job boards),
-    past NSF award records, or rejected/low-score items.
+    Removes any previously saved grants or auto-discovered sources from obvious non-RFP
+    domains (e.g., Wikipedia, social media, job boards, dictionary sites).
     """
     junk_url_patterns = (
         "%wikipedia.org%",
@@ -346,23 +345,10 @@ def purge_invalid_grants_and_sources() -> None:
         "%indeed.com%",
         "%glassdoor.com%",
         "%ziprecruiter.com%",
-        "%researchgate.net%",
-        "%academia.edu%",
-        "%jstor.org%",
-        "%arxiv.org%",
-        "%scholar.google.%",
-        "%pubmed.ncbi.nlm.nih.gov%",
-        "%sciencedirect.com%",
-        "%link.springer.com%",
-        "%tandfonline.com%",
         "%investopedia.com%",
         "%dictionary.com%",
         "%merriam-webster.com%",
         "%/wiki/%",
-        "%nsf.gov/awardsearch/showAward%",
-        "%/past-recipients%",
-        "%/past-grantees%",
-        "%/past-fellows%",
     )
     with get_conn() as conn:
         for pat in junk_url_patterns:
@@ -376,15 +362,6 @@ def purge_invalid_grants_and_sources() -> None:
         )
         conn.execute(
             "DELETE FROM sources WHERE is_discovered = 1 AND LOWER(name) LIKE '%wikipedia%'"
-        )
-        # Purge unstarred grants that scored below the minimum relevance threshold
-        row = conn.execute(
-            "SELECT value FROM settings WHERE key = 'ai_min_match_score'"
-        ).fetchone()
-        min_score = int((row["value"] if row else "65") or 65)
-        conn.execute(
-            "DELETE FROM grants WHERE starred = 0 AND ai_score < ?",
-            (min_score,),
         )
 
 
