@@ -253,6 +253,8 @@ def init_db() -> None:
                 matched_tags TEXT NOT NULL,
                 ai_score INTEGER DEFAULT 0,
                 ai_reason TEXT DEFAULT '',
+                eligibility_summary TEXT DEFAULT '',
+                match_confidence REAL DEFAULT 0.0,
                 status TEXT DEFAULT 'new',
                 starred INTEGER DEFAULT 0,
                 notified INTEGER DEFAULT 0,
@@ -276,11 +278,16 @@ def init_db() -> None:
             """
         )
 
+        # Auto-migrate existing databases to ensure all required columns exist on `grants`
         cols = [r["name"] for r in conn.execute("PRAGMA table_info(grants)").fetchall()]
         if "ai_score" not in cols:
             conn.execute("ALTER TABLE grants ADD COLUMN ai_score INTEGER DEFAULT 0")
         if "ai_reason" not in cols:
             conn.execute("ALTER TABLE grants ADD COLUMN ai_reason TEXT DEFAULT ''")
+        if "eligibility_summary" not in cols:
+            conn.execute("ALTER TABLE grants ADD COLUMN eligibility_summary TEXT DEFAULT ''")
+        if "match_confidence" not in cols:
+            conn.execute("ALTER TABLE grants ADD COLUMN match_confidence REAL DEFAULT 0.0")
 
         now = datetime.now().isoformat(timespec="seconds")
 

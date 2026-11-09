@@ -90,6 +90,7 @@ SOURCE_PORTAL_INDICATORS = [
 ]
 
 # Stopwords stripped from multi-word search queries when extracting core thematic tokens.
+# Includes generic grant nouns as well as broad/conversational modifiers ("broad", "general", "any").
 GENERIC_QUERY_STOPWORDS = {
     "grant",
     "grants",
@@ -114,6 +115,22 @@ GENERIC_QUERY_STOPWORDS = {
     "nofo",
     "nofa",
     "open",
+    "active",
+    "current",
+    "available",
+    "broad",
+    "general",
+    "wide",
+    "any",
+    "all",
+    "every",
+    "various",
+    "looking",
+    "seeking",
+    "find",
+    "search",
+    "need",
+    "want",
     "request",
     "proposals",
     "proposal",
@@ -171,13 +188,14 @@ def _extract_core_tokens(phrase: str) -> List[str]:
     """
     Extracts the meaningful subject-matter tokens from a search query by:
     1. Fixing common typos (`clean_query_typos`).
-    2. Removing generic RFP stopwords (`grant`, `rfp`, `nofo`, `solicitation`, etc.).
-    For example: `'community engagemnet ("RFP" OR "grant")'` -> `['community', 'engagement']`.
+    2. Removing generic RFP/broad stopwords (`grant`, `rfp`, `nofo`, `broad`, `general`, etc.).
+    If the user entered a purely broad request (like `'broad grants'` or `'any open grants'`),
+    falls back to `['grant']` so broad searches match all active grant opportunities.
     """
     cleaned = clean_query_typos(re.sub(r'\(".*?"\)', " ", phrase or ""))
     words = re.findall(r"[a-z0-9]{3,}", cleaned.lower())
     core = [w for w in words if w not in GENERIC_QUERY_STOPWORDS]
-    return core if core else words
+    return core if core else ["grant"]
 
 
 def _token_matches_text(tok: str, low_text: str) -> bool:
@@ -185,6 +203,11 @@ def _token_matches_text(tok: str, low_text: str) -> bool:
     Checks if a keyword token `tok` matches `low_text`, supporting 6-character stem
     matching (e.g., `'engagement'` matches `'engaging'` / `'engaged'`).
     """
+    if tok == "grant":
+        return any(
+            w in low_text
+            for w in ("grant", "fellowship", "rfp", "nofo", "award", "funding", "stipend", "solicitation", "foundation")
+        )
     if tok in low_text:
         return True
     if len(tok) >= 6 and tok[:6] in low_text:
@@ -196,8 +219,8 @@ def match_tagwords(text: str, tagwords: List[str]) -> List[str]:
     """
     Determines which user search topics (`tagwords`) match a candidate grant's title/snippet.
     Uses both exact substring matching and tokenized stem matching so that multi-word
-    queries like `'community engagement RFP'` still match a grant titled
-    `'Community-Engaged Research Grants'`.
+    queries like `'community engagement RFP'` or broad requests like `'broad grants'`
+    reliably match open grant opportunities.
     """
     low = (text or "").lower()
     matched = []
